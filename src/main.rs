@@ -26,8 +26,6 @@ struct GraphApp {
     show_grid: bool,
     uniform_background: bool,
     network_opacity: f32,
-    pan_x: f32,
-    pan_y: f32,
 }
 
 impl GraphApp {
@@ -124,13 +122,10 @@ impl Application for GraphApp {
             show_grid: true,
             uniform_background: false,
             network_opacity: 0.95,
-            pan_x: 60.0,
-            pan_y: 60.0,
         };
         
         app.menu_bar.set_rect(0.0, 0.0, 1024.0, 26.0);
         app.graph.set_rect(0.0, 26.0, 1024.0, 768.0 - 26.0);
-        app.graph.set_grid_origin(60.0, 60.0);
         app.rebuild_text_items();
         app
     }
@@ -222,7 +217,6 @@ impl Application for GraphApp {
             
             // Layout Graph below MenuBar
             self.graph.set_rect(0.0, 26.0, size.width, size.height - 26.0);
-            self.graph.set_grid_origin(self.pan_x, self.pan_y);
             
             self.rebuild_text_items();
             self.needs_rebuild = false;
@@ -357,21 +351,8 @@ impl Application for GraphApp {
         msg_out
     }
 
-    fn handle_mouse_wheel(&mut self, delta: &MouseScrollDelta, _pos: LogicalPosition, needs_rebuild: &mut bool) {
-        let changed = match delta {
-            MouseScrollDelta::LineDelta(x, y) => {
-                self.pan_x += *x * 15.0;
-                self.pan_y += *y * 15.0;
-                true
-            }
-            MouseScrollDelta::PixelDelta(pos) => {
-                self.pan_x += pos.x as f32;
-                self.pan_y += pos.y as f32;
-                true
-            }
-        };
-        if changed {
-            self.graph.set_grid_origin(self.pan_x, self.pan_y);
+    fn handle_mouse_wheel(&mut self, delta: &MouseScrollDelta, pos: LogicalPosition, needs_rebuild: &mut bool) {
+        if self.graph.mouse_wheel(delta, pos.x as f32, pos.y as f32) {
             *needs_rebuild = true;
             self.needs_rebuild = true;
         }
