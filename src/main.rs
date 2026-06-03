@@ -7,6 +7,10 @@ use clear_ui::widget::{MouseButton, ElementState, MouseScrollDelta, KeyEvent, Te
 enum AppMessage {
     Exit,
     ToggleGrid,
+    ToggleUniformBackground,
+    SetOpacity95,
+    SetOpacity75,
+    SetOpacity50,
     AddNode,
 }
 
@@ -20,6 +24,8 @@ struct GraphApp {
     height: u32,
     scale_factor: f64,
     show_grid: bool,
+    uniform_background: bool,
+    network_opacity: f32,
 }
 
 impl GraphApp {
@@ -76,21 +82,33 @@ impl Application for GraphApp {
         ];
         graph.set_nodes(&nodes);
         
-        // Configure grid settings
+        // Configure initial grid settings on the graph
         graph.set_show_network_grid(true);
         graph.set_grid_sizes(140.0, 70.0);
         graph.set_skipped_sizes(35.0, 35.0);
         graph.set_grid_origin(60.0, 60.0);
         graph.set_grid_snap_enabled(true);
+        graph.set_uniform_background(false);
+        graph.set_network_opacity(0.95);
 
-        // Build Menu Bar
+        // Build Menu Bar with options to toggle new features
         let mut menu_bar = MenuBar::new(0.0, 0.0, 1024.0, 26.0)
             .with_title("clear-graph")
             .with_item("File", &["Exit"])
             .with_item("Edit", &["Add Node"])
-            .with_item("View", &["Show Grid"]);
+            .with_item("View", &[
+                "Show Grid",
+                "Uniform Background",
+                "Opacity: 95%",
+                "Opacity: 75%",
+                "Opacity: 50%"
+            ]);
             
-        menu_bar.set_item_checked(2, 0, true);
+        menu_bar.set_item_checked(2, 0, true);  // Show Grid checked
+        menu_bar.set_item_checked(2, 1, false); // Uniform Background unchecked
+        menu_bar.set_item_checked(2, 2, true);  // Opacity 95% checked
+        menu_bar.set_item_checked(2, 3, false); // Opacity 75% unchecked
+        menu_bar.set_item_checked(2, 4, false); // Opacity 50% unchecked
 
         let mut app = Self {
             menu_bar,
@@ -102,6 +120,8 @@ impl Application for GraphApp {
             height: 768,
             scale_factor: 1.0,
             show_grid: true,
+            uniform_background: false,
+            network_opacity: 0.95,
         };
         
         app.menu_bar.set_rect(0.0, 0.0, 1024.0, 26.0);
@@ -130,6 +150,40 @@ impl Application for GraphApp {
                 self.show_grid = !self.show_grid;
                 self.graph.set_show_network_grid(self.show_grid);
                 self.menu_bar.set_item_checked(2, 0, self.show_grid);
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            }
+            AppMessage::ToggleUniformBackground => {
+                self.uniform_background = !self.uniform_background;
+                self.graph.set_uniform_background(self.uniform_background);
+                self.menu_bar.set_item_checked(2, 1, self.uniform_background);
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            }
+            AppMessage::SetOpacity95 => {
+                self.network_opacity = 0.95;
+                self.graph.set_network_opacity(self.network_opacity);
+                self.menu_bar.set_item_checked(2, 2, true);
+                self.menu_bar.set_item_checked(2, 3, false);
+                self.menu_bar.set_item_checked(2, 4, false);
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            }
+            AppMessage::SetOpacity75 => {
+                self.network_opacity = 0.75;
+                self.graph.set_network_opacity(self.network_opacity);
+                self.menu_bar.set_item_checked(2, 2, false);
+                self.menu_bar.set_item_checked(2, 3, true);
+                self.menu_bar.set_item_checked(2, 4, false);
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            }
+            AppMessage::SetOpacity50 => {
+                self.network_opacity = 0.50;
+                self.graph.set_network_opacity(self.network_opacity);
+                self.menu_bar.set_item_checked(2, 2, false);
+                self.menu_bar.set_item_checked(2, 3, false);
+                self.menu_bar.set_item_checked(2, 4, true);
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }
@@ -168,10 +222,15 @@ impl Application for GraphApp {
             self.needs_rebuild = false;
         }
 
-        // 1. Background quad
+        // 1. Background quad (outer window color)
         quads.push((0.0, 0.0, self.width as f32, self.height as f32, [0.08, 0.08, 0.10, 1.0]));
 
-        // 2. Add Graph extra quads
+        // 2. Add Graph extra quads (includes graph background color if uniform background is active)
+        let graph_color = self.graph.color();
+        if graph_color[3] > 0.0 {
+            let (gx, gy, gw, gh) = self.graph.rect();
+            quads.push((gx, gy, gw, gh, graph_color));
+        }
         quads.extend(self.graph.extra_quads());
 
         // 3. Add MenuBar background and highlights/dropdowns
@@ -244,8 +303,13 @@ impl Application for GraphApp {
                             msg_out = Some(AppMessage::AddNode);
                         }
                     } else if menu_idx == 2 { // View
-                        if item_idx == 0 { // Toggle Grid
-                            msg_out = Some(AppMessage::ToggleGrid);
+                        match item_idx {
+                            0 => msg_out = Some(AppMessage::ToggleGrid),
+                            1 => msg_out = Some(AppMessage::ToggleUniformBackground),
+                            2 => msg_out = Some(AppMessage::SetOpacity95),
+                            3 => msg_out = Some(AppMessage::SetOpacity75),
+                            4 => msg_out = Some(AppMessage::SetOpacity50),
+                            _ => {}
                         }
                     }
                 }
