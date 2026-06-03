@@ -1,9 +1,17 @@
 use wayland_client::QueueHandle;
 use glyphon::{FontSystem, Buffer, Metrics, Attrs};
 use clear_ui::engine::{Application, EngineState, LogicalPosition, LogicalSize, WindowSettings};
-use clear_ui::widget::{MouseButton, ElementState, MouseScrollDelta, KeyEvent, TextItem, Widget, Graph, GraphNode};
+use clear_ui::widget::{MouseButton, ElementState, MouseScrollDelta, KeyEvent, TextItem, Widget, Graph, GraphNode, MenuBar};
+
+#[derive(Debug, Clone)]
+enum AppMessage {
+    Exit,
+    ToggleGrid,
+    AddNode,
+}
 
 struct GraphApp {
+    menu_bar: MenuBar,
     graph: Graph,
     text_items: Vec<TextItem>,
     font_system: FontSystem,
@@ -11,12 +19,19 @@ struct GraphApp {
     width: u32,
     height: u32,
     scale_factor: f64,
+    show_grid: bool,
 }
 
 impl GraphApp {
     fn rebuild_text_items(&mut self) {
         self.text_items.clear();
-        let labels = self.graph.text_labels();
+        
+        // 1. Collect labels from Graph widget
+        let mut labels = self.graph.text_labels();
+        
+        // 2. Collect labels from MenuBar widget
+        labels.extend(self.menu_bar.text_labels());
+        
         for label in labels {
             let metrics = Metrics::new(label.font_size, label.font_size * 1.4);
             let mut buf = Buffer::new(&mut self.font_system, metrics);
@@ -33,12 +48,12 @@ impl GraphApp {
 }
 
 impl Application for GraphApp {
-    type Message = ();
+    type Message = AppMessage;
 
     fn new(_qh: &QueueHandle<EngineState<Self>>, _sender: calloop::channel::Sender<Self::Message>) -> Self {
         let mut graph = Graph::new();
         
-        // Define some graph nodes
+        // Define some initial graph nodes
         let nodes = vec![
             GraphNode {
                 name: "Data Source".to_string(),
@@ -68,7 +83,17 @@ impl Application for GraphApp {
         graph.set_grid_origin(60.0, 60.0);
         graph.set_grid_snap_enabled(true);
 
+        // Build Menu Bar
+        let mut menu_bar = MenuBar::new(0.0, 0.0, 1024.0, 26.0)
+            .with_title("clear-graph")
+            .with_item("File", &["Exit"])
+            .with_item("Edit", &["Add Node"])
+            .with_item("View", &["Show Grid"]);
+            
+        menu_bar.set_item_checked(2, 0, true);
+
         let mut app = Self {
+            menu_bar,
             graph,
             text_items: Vec::new(),
             font_system: FontSystem::new(),
@@ -76,8 +101,11 @@ impl Application for GraphApp {
             width: 1024,
             height: 768,
             scale_factor: 1.0,
+            show_grid: true,
         };
-        app.graph.set_rect(0.0, 0.0, 1024.0, 768.0);
+        
+        app.menu_bar.set_rect(0.0, 0.0, 1024.0, 26.0);
+        app.graph.set_rect(0.0, 26.0, 1024.0, 768.0 - 26.0);
         app.rebuild_text_items();
         app
     }
@@ -93,7 +121,33 @@ impl Application for GraphApp {
         }
     }
 
-    fn update(&mut self, _msg: Self::Message, _needs_rebuild: &mut bool, _exit: &mut bool) {}
+    fn update(&mut self, msg: Self::Message, needs_rebuild: &mut bool, exit: &mut bool) {
+        match msg {
+            AppMessage::Exit => {
+                *exit = true;
+            }
+            AppMessage::ToggleGrid => {
+                self.show_grid = !self.show_grid;
+                self.graph.set_show_network_grid(self.show_grid);
+                self.menu_bar.set_item_checked(2, 0, self.show_grid);
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            }
+            AppMessage::AddNode => {
+                let mut nodes = self.graph.get_nodes();
+                let next_id = nodes.len() + 1;
+                nodes.push(GraphNode {
+                    name: format!("Node {}", next_id),
+                    position: (2.0 + (next_id % 3) as f32, 2.0 + (next_id / 3) as f32),
+                    parameters: vec![],
+                    geom_visible: true,
+                });
+                self.graph.set_nodes(&nodes);
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            }
+        }
+    }
 
     fn tick(&mut self, _dt: f32, _needs_rebuild: &mut bool) {}
 
@@ -103,7 +157,13 @@ impl Application for GraphApp {
             self.width = size.width as u32;
             self.height = size.height as u32;
             self.scale_factor = scale;
-            self.graph.set_rect(0.0, 0.0, size.width, size.height);
+            
+            // Layout MenuBar at the top
+            self.menu_bar.set_rect(0.0, 0.0, size.width, 26.0);
+            
+            // Layout Graph below MenuBar
+            self.graph.set_rect(0.0, 26.0, size.width, size.height - 26.0);
+            
             self.rebuild_text_items();
             self.needs_rebuild = false;
         }
@@ -111,8 +171,23 @@ impl Application for GraphApp {
         // 1. Background quad
         quads.push((0.0, 0.0, self.width as f32, self.height as f32, [0.08, 0.08, 0.10, 1.0]));
 
-        // 2. Add extra quads from the Graph widget (nodes, wires, toggles, grid)
+        // 2. Add Graph extra quads
         quads.extend(self.graph.extra_quads());
+
+        // 3. Add MenuBar background and highlights/dropdowns
+        let mb_color = self.menu_bar.color();
+        let (mb_x, mb_y, mb_w, mb_h) = self.menu_bar.rect();
+        quads.push((mb_x, mb_y, mb_w, mb_h, mb_color));
+
+        // Add header highlights for open/hovered menus
+        for menu in &self.menu_bar.menus {
+            if let Some(hq) = menu.highlight_quad() {
+                quads.push(hq);
+            }
+        }
+
+        // Add MenuBar extra quads (dropdown boxes)
+        quads.extend(self.menu_bar.extra_quads());
     }
 
     fn text_items(&self) -> &[TextItem] {
@@ -121,15 +196,29 @@ impl Application for GraphApp {
 
     fn handle_pointer_move(&mut self, pos: LogicalPosition, needs_rebuild: &mut bool) {
         let mut changed = false;
-        if self.graph.is_dragging() {
-            if self.graph.drag_update(pos.x, pos.y) {
+
+        // If MenuBar has an open menu, or cursor is over MenuBar, feed it first
+        if self.menu_bar.is_menu_open() || self.menu_bar.hit_test(pos.x, pos.y) {
+            if self.menu_bar.on_cursor_moved(pos.x, pos.y) {
                 changed = true;
             }
         } else {
-            if self.graph.on_cursor_moved(pos.x, pos.y) {
+            // Otherwise feed it to Graph
+            if self.graph.is_dragging() {
+                if self.graph.drag_update(pos.x, pos.y) {
+                    changed = true;
+                }
+            } else {
+                if self.graph.on_cursor_moved(pos.x, pos.y) {
+                    changed = true;
+                }
+            }
+            // Clear menu bar hover if cursor moved away
+            if self.menu_bar.on_cursor_moved(pos.x, pos.y) {
                 changed = true;
             }
         }
+
         if changed {
             *needs_rebuild = true;
             self.needs_rebuild = true;
@@ -138,30 +227,64 @@ impl Application for GraphApp {
 
     fn handle_mouse_input(&mut self, button: MouseButton, state: ElementState, pos: LogicalPosition, needs_rebuild: &mut bool) -> Option<Self::Message> {
         let mut changed = false;
-        if button == MouseButton::Left {
-            if state == ElementState::Pressed {
-                if self.graph.mouse_input(button, state, pos.x, pos.y) {
-                    if self.graph.is_dragging() {
-                        self.graph.drag_begin(pos.x, pos.y);
+        let mut msg_out = None;
+
+        if self.menu_bar.is_menu_open() || self.menu_bar.hit_test(pos.x, pos.y) {
+            if self.menu_bar.mouse_input(button, state, pos.x, pos.y) {
+                changed = true;
+                
+                // Check if a dropdown menu item was clicked
+                if let Some((menu_idx, item_idx)) = self.menu_bar.menu_click() {
+                    if menu_idx == 0 { // File
+                        if item_idx == 0 { // Exit
+                            msg_out = Some(AppMessage::Exit);
+                        }
+                    } else if menu_idx == 1 { // Edit
+                        if item_idx == 0 { // Add Node
+                            msg_out = Some(AppMessage::AddNode);
+                        }
+                    } else if menu_idx == 2 { // View
+                        if item_idx == 0 { // Toggle Grid
+                            msg_out = Some(AppMessage::ToggleGrid);
+                        }
                     }
-                    changed = true;
                 }
-            } else if state == ElementState::Released {
-                if self.graph.is_dragging() {
-                    self.graph.drag_end();
-                    changed = true;
-                } else {
+            }
+            
+            // If the user clicked outside the open menu, close it
+            if state == ElementState::Pressed && !self.menu_bar.hit_test(pos.x, pos.y) {
+                self.menu_bar.unfocus();
+                changed = true;
+            }
+        } else {
+            // Otherwise route to Graph
+            if button == MouseButton::Left {
+                if state == ElementState::Pressed {
                     if self.graph.mouse_input(button, state, pos.x, pos.y) {
+                        if self.graph.is_dragging() {
+                            self.graph.drag_begin(pos.x, pos.y);
+                        }
                         changed = true;
+                    }
+                } else if state == ElementState::Released {
+                    if self.graph.is_dragging() {
+                        self.graph.drag_end();
+                        changed = true;
+                    } else {
+                        if self.graph.mouse_input(button, state, pos.x, pos.y) {
+                            changed = true;
+                        }
                     }
                 }
             }
         }
+
         if changed {
             *needs_rebuild = true;
             self.needs_rebuild = true;
         }
-        None
+        
+        msg_out
     }
 
     fn handle_mouse_wheel(&mut self, _delta: &MouseScrollDelta, _pos: LogicalPosition, _needs_rebuild: &mut bool) {}
