@@ -1,7 +1,7 @@
 use wayland_client::QueueHandle;
 use glyphon::{FontSystem, Buffer, Metrics, Attrs};
 use clear_ui::engine::{Application, EngineState, LogicalPosition, LogicalSize, WindowSettings};
-use clear_ui::widget::{MouseButton, ElementState, MouseScrollDelta, KeyEvent, TextItem, Widget, Graph, GraphNode, MenuBar};
+use clear_ui::widget::{MouseButton, ElementState, MouseScrollDelta, KeyEvent, TextItem, Element, Graph, GraphNode, MenuBar};
 
 #[derive(Debug, Clone)]
 enum AppMessage {
