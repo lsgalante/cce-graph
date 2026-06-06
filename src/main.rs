@@ -33,12 +33,12 @@ impl GraphApp {
         self.text_items.clear();
         
         // 1. Collect labels from Graph widget
-        let mut labels = self.graph.text_labels();
+        let mut labels = self.graph.text_labels_with_bounds();
         
         // 2. Collect labels from MenuBar widget
-        labels.extend(self.menu_bar.text_labels());
+        labels.extend(self.menu_bar.text_labels_with_bounds());
         
-        for label in labels {
+        for (label, bounds) in labels {
             let metrics = Metrics::new(label.font_size, label.font_size * 1.4);
             let mut buf = Buffer::new(&mut self.font_system, metrics);
             buf.set_text(&mut self.font_system, &label.text, Attrs::new(), glyphon::Shaping::Advanced);
@@ -48,6 +48,7 @@ impl GraphApp {
                 x: label.x,
                 y: label.y,
                 color: glyphon::Color::rgb(label.color[0], label.color[1], label.color[2]),
+                bounds,
             });
         }
     }
