@@ -26,6 +26,7 @@ struct GraphApp {
     show_grid: bool,
     uniform_background: bool,
     network_opacity: f32,
+    ui_context: clear_ui::context::UiContext,
 }
 
 impl GraphApp {
@@ -33,10 +34,10 @@ impl GraphApp {
         self.text_items.clear();
         
         // 1. Collect labels from Graph widget
-        let mut labels = self.graph.text_labels_with_bounds();
+        let mut labels = self.graph.text_labels_with_bounds(&self.ui_context);
         
         // 2. Collect labels from MenuBar widget
-        labels.extend(self.menu_bar.text_labels_with_bounds());
+        labels.extend(self.menu_bar.text_labels_with_bounds(&self.ui_context));
         
         for (label, bounds) in labels {
             let metrics = Metrics::new(label.font_size, label.font_size * 1.4);
@@ -83,18 +84,20 @@ impl Application for GraphApp {
         ];
         graph.set_nodes(&nodes);
         
+        let (show_grid, snap_enabled, uniform_background, network_opacity) = load_config();
+
         // Configure initial grid settings on the graph
-        graph.set_show_network_grid(true);
+        graph.set_show_network_grid(show_grid);
         graph.set_grid_sizes(140.0, 70.0);
         graph.set_skipped_sizes(35.0, 35.0);
         graph.set_grid_origin(60.0, 60.0);
-        graph.set_grid_snap_enabled(true);
-        graph.set_uniform_background(false);
-        graph.set_network_opacity(0.95);
+        graph.set_grid_snap_enabled(snap_enabled);
+        graph.set_uniform_background(uniform_background);
+        graph.set_network_opacity(network_opacity);
 
         // Build Menu Bar with options to toggle new features
         let mut menu_bar = MenuBar::new(0.0, 0.0, 1024.0, 26.0)
-            .with_title("clear-graph")
+            .with_title("cce-graph")
             .with_item("File", &["Exit"])
             .with_item("Edit", &["Add Node"])
             .with_item("View", &[
@@ -105,11 +108,11 @@ impl Application for GraphApp {
                 "Opacity: 50%"
             ]);
             
-        menu_bar.set_item_checked(2, 0, true);  // Show Grid checked
-        menu_bar.set_item_checked(2, 1, false); // Uniform Background unchecked
-        menu_bar.set_item_checked(2, 2, true);  // Opacity 95% checked
-        menu_bar.set_item_checked(2, 3, false); // Opacity 75% unchecked
-        menu_bar.set_item_checked(2, 4, false); // Opacity 50% unchecked
+        menu_bar.set_item_checked(2, 0, show_grid);  // Show Grid checked
+        menu_bar.set_item_checked(2, 1, uniform_background); // Uniform Background unchecked
+        menu_bar.set_item_checked(2, 2, (network_opacity - 0.95).abs() < 0.05);  // Opacity 95% checked
+        menu_bar.set_item_checked(2, 3, (network_opacity - 0.75).abs() < 0.05);  // Opacity 75% checked
+        menu_bar.set_item_checked(2, 4, (network_opacity - 0.50).abs() < 0.05);  // Opacity 50% checked
 
         let mut app = Self {
             menu_bar,
@@ -120,9 +123,10 @@ impl Application for GraphApp {
             width: 1024,
             height: 768,
             scale_factor: 1.0,
-            show_grid: true,
-            uniform_background: false,
-            network_opacity: 0.95,
+            show_grid,
+            uniform_background,
+            network_opacity,
+            ui_context: clear_ui::context::UiContext::new(),
         };
         
         app.menu_bar.set_rect(0.0, 0.0, 1024.0, 26.0);
@@ -133,8 +137,8 @@ impl Application for GraphApp {
 
     fn settings(&self) -> WindowSettings {
         WindowSettings {
-            title: "Clear Graph".to_string(),
-            app_id: "clear-graph".to_string(),
+            title: "CCE Graph".to_string(),
+            app_id: "cce-graph".to_string(),
             width: 1024,
             height: 768,
             fullscreen: false,
@@ -151,6 +155,7 @@ impl Application for GraphApp {
                 self.show_grid = !self.show_grid;
                 self.graph.set_show_network_grid(self.show_grid);
                 self.menu_bar.set_item_checked(2, 0, self.show_grid);
+                write_config_value("graph_show_grid", &self.show_grid.to_string());
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }
@@ -158,6 +163,7 @@ impl Application for GraphApp {
                 self.uniform_background = !self.uniform_background;
                 self.graph.set_uniform_background(self.uniform_background);
                 self.menu_bar.set_item_checked(2, 1, self.uniform_background);
+                write_config_value("graph_uniform_background", &self.uniform_background.to_string());
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }
@@ -167,6 +173,7 @@ impl Application for GraphApp {
                 self.menu_bar.set_item_checked(2, 2, true);
                 self.menu_bar.set_item_checked(2, 3, false);
                 self.menu_bar.set_item_checked(2, 4, false);
+                write_config_value("graph_network_opacity", "0.95");
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }
@@ -176,6 +183,7 @@ impl Application for GraphApp {
                 self.menu_bar.set_item_checked(2, 2, false);
                 self.menu_bar.set_item_checked(2, 3, true);
                 self.menu_bar.set_item_checked(2, 4, false);
+                write_config_value("graph_network_opacity", "0.75");
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }
@@ -185,6 +193,7 @@ impl Application for GraphApp {
                 self.menu_bar.set_item_checked(2, 2, false);
                 self.menu_bar.set_item_checked(2, 3, false);
                 self.menu_bar.set_item_checked(2, 4, true);
+                write_config_value("graph_network_opacity", "0.50");
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }
@@ -241,7 +250,7 @@ impl Application for GraphApp {
 
         // Add header highlights for open/hovered menus
         for menu in &self.menu_bar.menus {
-            if let Some(hq) = menu.highlight_quad() {
+            if let Some(hq) = menu.highlight_quad(&self.ui_context) {
                 quads.push(hq);
             }
         }
@@ -258,8 +267,8 @@ impl Application for GraphApp {
         let mut changed = false;
 
         // If MenuBar has an open menu, or cursor is over MenuBar, feed it first
-        if self.menu_bar.is_menu_open() || self.menu_bar.hit_test(pos.x, pos.y) {
-            if self.menu_bar.on_cursor_moved(pos.x, pos.y) {
+        if self.menu_bar.is_menu_open() || self.menu_bar.hit_test(pos.x, pos.y, &self.ui_context) {
+            if self.menu_bar.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) {
                 changed = true;
             }
         } else {
@@ -269,12 +278,12 @@ impl Application for GraphApp {
                     changed = true;
                 }
             } else {
-                if self.graph.on_cursor_moved(pos.x, pos.y) {
+                if self.graph.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) {
                     changed = true;
                 }
             }
             // Clear menu bar hover if cursor moved away
-            if self.menu_bar.on_cursor_moved(pos.x, pos.y) {
+            if self.menu_bar.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) {
                 changed = true;
             }
         }
@@ -289,8 +298,8 @@ impl Application for GraphApp {
         let mut changed = false;
         let mut msg_out = None;
 
-        if self.menu_bar.is_menu_open() || self.menu_bar.hit_test(pos.x, pos.y) {
-            if self.menu_bar.mouse_input(button, state, pos.x, pos.y) {
+        if self.menu_bar.is_menu_open() || self.menu_bar.hit_test(pos.x, pos.y, &self.ui_context) {
+            if self.menu_bar.mouse_input(button, state, pos.x, pos.y, &mut self.ui_context) {
                 changed = true;
                 
                 // Check if a dropdown menu item was clicked
@@ -317,7 +326,7 @@ impl Application for GraphApp {
             }
             
             // If the user clicked outside the open menu, close it
-            if state == ElementState::Pressed && !self.menu_bar.hit_test(pos.x, pos.y) {
+            if state == ElementState::Pressed && !self.menu_bar.hit_test(pos.x, pos.y, &self.ui_context) {
                 self.menu_bar.unfocus();
                 changed = true;
             }
@@ -325,7 +334,7 @@ impl Application for GraphApp {
             // Otherwise route to Graph
             if button == MouseButton::Left {
                 if state == ElementState::Pressed {
-                    if self.graph.mouse_input(button, state, pos.x, pos.y) {
+                    if self.graph.mouse_input(button, state, pos.x, pos.y, &mut self.ui_context) {
                         if self.graph.is_dragging() {
                             self.graph.drag_begin(pos.x, pos.y);
                         }
@@ -336,7 +345,7 @@ impl Application for GraphApp {
                         self.graph.drag_end();
                         changed = true;
                     } else {
-                        if self.graph.mouse_input(button, state, pos.x, pos.y) {
+                        if self.graph.mouse_input(button, state, pos.x, pos.y, &mut self.ui_context) {
                             changed = true;
                         }
                     }
@@ -353,7 +362,7 @@ impl Application for GraphApp {
     }
 
     fn handle_mouse_wheel(&mut self, delta: &MouseScrollDelta, pos: LogicalPosition, needs_rebuild: &mut bool) {
-        if self.graph.mouse_wheel(delta, pos.x as f32, pos.y as f32) {
+        if self.graph.mouse_wheel(delta, pos.x as f32, pos.y as f32, &mut self.ui_context) {
             *needs_rebuild = true;
             self.needs_rebuild = true;
         }
@@ -362,6 +371,75 @@ impl Application for GraphApp {
     fn handle_key_input(&mut self, _event: &KeyEvent, _needs_rebuild: &mut bool) -> Option<Self::Message> {
         None
     }
+}
+
+fn load_config() -> (bool, bool, bool, f32) {
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.toml").unwrap_or_default();
+    let show_grid = parse_bool_from(&content, "graph_show_grid", true);
+    let snap_enabled = parse_bool_from(&content, "graph_snap_enabled", true);
+    let uniform_background = parse_bool_from(&content, "graph_uniform_background", false);
+    let network_opacity = parse_f32_from(&content, "graph_network_opacity", 0.95);
+    (show_grid, snap_enabled, uniform_background, network_opacity)
+}
+
+fn parse_bool_from(content: &str, key: &str, default: bool) -> bool {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix(key) {
+            let rest = rest.trim_start_matches(|c: char| c == ' ' || c == '=' || c == '"');
+            let val_str = rest.trim_end_matches('"').trim();
+            if let Ok(val) = val_str.parse::<bool>() {
+                return val;
+            }
+        }
+    }
+    default
+}
+
+fn parse_f32_from(content: &str, key: &str, default: f32) -> f32 {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix(key) {
+            let rest = rest.trim_start_matches(|c: char| c == ' ' || c == '=' || c == '"');
+            let val_str = rest.trim_end_matches('"').trim();
+            if let Ok(val) = val_str.parse::<f32>() {
+                return val;
+            }
+        }
+    }
+    default
+}
+
+fn write_config_value(key: &str, value: &str) -> bool {
+    let path = "/home/lsgalante/.config/cce/config.toml";
+    let content = std::fs::read_to_string(path).unwrap_or_default();
+    let new_line = format!("{} = {}", key, value);
+    let mut found = false;
+    let updated: String = content.lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with(key) {
+                found = true;
+                new_line.clone()
+            } else {
+                line.to_string()
+            }
+        }).collect::<Vec<_>>().join("\n");
+    if !found {
+        let mut result = String::new();
+        let mut in_layout = false;
+        let mut inserted = false;
+        for line in updated.lines() {
+            if line.trim() == "[layout]" { in_layout = true; }
+            else if line.trim().starts_with('[') && in_layout {
+                if !inserted { result.push_str(&new_line); result.push('\n'); inserted = true; }
+                in_layout = false;
+            }
+            result.push_str(line); result.push('\n');
+        }
+        if in_layout && !inserted { result.push_str(&new_line); result.push('\n'); }
+        std::fs::write(path, result).is_ok()
+    } else { std::fs::write(path, updated).is_ok() }
 }
 
 fn main() {

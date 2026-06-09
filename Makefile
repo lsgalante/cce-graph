@@ -5,7 +5,7 @@ build:
 
 install: build
 	mkdir -p ~/.local/bin
-	install -m 755 target/release/clear-graph ~/.local/bin/clear-graph
+	install -m 755 target/release/cce-graph ~/.local/bin/cce-graph
 
 run:
 	cargo run
