@@ -1,7 +1,7 @@
 use wayland_client::QueueHandle;
 use glyphon::{FontSystem, Buffer, Metrics, Attrs};
 use clear_ui::engine::{Application, EngineState, LogicalPosition, LogicalSize, WindowSettings};
-use clear_ui::widget::{MouseButton, ElementState, MouseScrollDelta, KeyEvent, TextItem, Element, Graph, GraphNode, MenuBar};
+use clear_ui::widget::{MouseButton, ElementState, MouseScrollDelta, KeyEvent, TextItem, Element, Graph, GraphNode, MenuBar, MenuController, GraphController};
 
 #[derive(Debug, Clone)]
 enum AppMessage {
@@ -64,18 +64,21 @@ impl Application for GraphApp {
         // Define some initial graph nodes
         let nodes = vec![
             GraphNode {
+                id: String::new(),
                 name: "Data Source".to_string(),
                 position: (1.0, 1.0),
                 parameters: vec![],
                 geom_visible: true,
             },
             GraphNode {
+                id: String::new(),
                 name: "Filter".to_string(),
                 position: (3.0, 1.0),
                 parameters: vec![("input".to_string(), "Data Source".to_string(), "string".to_string())],
                 geom_visible: true,
             },
             GraphNode {
+                id: String::new(),
                 name: "Render Output".to_string(),
                 position: (5.0, 2.0),
                 parameters: vec![("input".to_string(), "Filter".to_string(), "string".to_string())],
@@ -84,12 +87,12 @@ impl Application for GraphApp {
         ];
         graph.set_nodes(&nodes);
         
-        let (show_grid, snap_enabled, uniform_background, network_opacity) = load_config();
+        let (show_grid, snap_enabled, uniform_background, network_opacity, gap_width) = load_config();
 
         // Configure initial grid settings on the graph
         graph.set_show_network_grid(show_grid);
         graph.set_grid_sizes(140.0, 70.0);
-        graph.set_skipped_sizes(35.0, 35.0);
+        graph.set_skipped_sizes(gap_width, gap_width);
         graph.set_grid_origin(60.0, 60.0);
         graph.set_grid_snap_enabled(snap_enabled);
         graph.set_uniform_background(uniform_background);
@@ -201,6 +204,7 @@ impl Application for GraphApp {
                 let mut nodes = self.graph.get_nodes();
                 let next_id = nodes.len() + 1;
                 nodes.push(GraphNode {
+                    id: String::new(),
                     name: format!("Node {}", next_id),
                     position: (2.0 + (next_id % 3) as f32, 2.0 + (next_id / 3) as f32),
                     parameters: vec![],
@@ -248,12 +252,7 @@ impl Application for GraphApp {
         let (mb_x, mb_y, mb_w, mb_h) = self.menu_bar.rect();
         quads.push((mb_x, mb_y, mb_w, mb_h, mb_color));
 
-        // Add header highlights for open/hovered menus
-        for menu in &self.menu_bar.menus {
-            if let Some(hq) = menu.highlight_quad(&self.ui_context) {
-                quads.push(hq);
-            }
-        }
+
 
         // Add MenuBar extra quads (dropdown boxes)
         quads.extend(self.menu_bar.extra_quads());
@@ -373,13 +372,14 @@ impl Application for GraphApp {
     }
 }
 
-fn load_config() -> (bool, bool, bool, f32) {
+fn load_config() -> (bool, bool, bool, f32, f32) {
     let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.toml").unwrap_or_default();
     let show_grid = parse_bool_from(&content, "graph_show_grid", true);
     let snap_enabled = parse_bool_from(&content, "graph_snap_enabled", true);
     let uniform_background = parse_bool_from(&content, "graph_uniform_background", false);
     let network_opacity = parse_f32_from(&content, "graph_network_opacity", 0.95);
-    (show_grid, snap_enabled, uniform_background, network_opacity)
+    let gap_width = parse_f32_from(&content, "graph_gap_width", 35.0);
+    (show_grid, snap_enabled, uniform_background, network_opacity, gap_width)
 }
 
 fn parse_bool_from(content: &str, key: &str, default: bool) -> bool {
