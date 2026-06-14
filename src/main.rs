@@ -25,7 +25,8 @@ struct GraphApp {
     scale_factor: f64,
     show_grid: bool,
     uniform_background: bool,
-    network_opacity: f32,
+    cell_opacity: f32,
+    gap_opacity: f32,
     ui_context: clear_ui::context::UiContext,
 }
 
@@ -39,8 +40,10 @@ impl GraphApp {
         // 2. Collect labels from MenuBar widget
         labels.extend(self.menu_bar.text_labels_with_bounds(&self.ui_context));
         
+        let scale = clear_ui::scale::scale_factor();
         for (label, bounds) in labels {
-            let metrics = Metrics::new(label.font_size, label.font_size * 1.4);
+            let physical_size = label.font_size * scale;
+            let metrics = Metrics::new(physical_size, physical_size * 1.4);
             let mut buf = Buffer::new(&mut self.font_system, metrics);
             buf.set_text(&mut self.font_system, &label.text, Attrs::new(), glyphon::Shaping::Advanced);
             buf.shape_until_scroll(&mut self.font_system, true);
@@ -69,6 +72,9 @@ impl Application for GraphApp {
                 position: (1.0, 1.0),
                 parameters: vec![],
                 geom_visible: true,
+                node_type: String::new(),
+                inputs: 0,
+                outputs: 1,
             },
             GraphNode {
                 id: String::new(),
@@ -76,6 +82,9 @@ impl Application for GraphApp {
                 position: (3.0, 1.0),
                 parameters: vec![("input".to_string(), "Data Source".to_string(), "string".to_string())],
                 geom_visible: true,
+                node_type: String::new(),
+                inputs: 1,
+                outputs: 1,
             },
             GraphNode {
                 id: String::new(),
@@ -83,11 +92,14 @@ impl Application for GraphApp {
                 position: (5.0, 2.0),
                 parameters: vec![("input".to_string(), "Filter".to_string(), "string".to_string())],
                 geom_visible: true,
+                node_type: String::new(),
+                inputs: 1,
+                outputs: 1,
             },
         ];
         graph.set_nodes(&nodes);
         
-        let (show_grid, snap_enabled, uniform_background, network_opacity, gap_width) = load_config();
+        let (show_grid, snap_enabled, uniform_background, cell_opacity, gap_opacity, gap_width) = load_config();
 
         // Configure initial grid settings on the graph
         graph.set_show_network_grid(show_grid);
@@ -96,7 +108,8 @@ impl Application for GraphApp {
         graph.set_grid_origin(60.0, 60.0);
         graph.set_grid_snap_enabled(snap_enabled);
         graph.set_uniform_background(uniform_background);
-        graph.set_network_opacity(network_opacity);
+        graph.set_cell_opacity(cell_opacity);
+        graph.set_gap_opacity(gap_opacity);
 
         // Build Menu Bar with options to toggle new features
         let mut menu_bar = MenuBar::new(0.0, 0.0, 1024.0, 26.0)
@@ -113,9 +126,9 @@ impl Application for GraphApp {
             
         menu_bar.set_item_checked(2, 0, show_grid);  // Show Grid checked
         menu_bar.set_item_checked(2, 1, uniform_background); // Uniform Background unchecked
-        menu_bar.set_item_checked(2, 2, (network_opacity - 0.95).abs() < 0.05);  // Opacity 95% checked
-        menu_bar.set_item_checked(2, 3, (network_opacity - 0.75).abs() < 0.05);  // Opacity 75% checked
-        menu_bar.set_item_checked(2, 4, (network_opacity - 0.50).abs() < 0.05);  // Opacity 50% checked
+        menu_bar.set_item_checked(2, 2, (cell_opacity - 0.95).abs() < 0.05);  // Opacity 95% checked
+        menu_bar.set_item_checked(2, 3, (cell_opacity - 0.75).abs() < 0.05);  // Opacity 75% checked
+        menu_bar.set_item_checked(2, 4, (cell_opacity - 0.50).abs() < 0.05);  // Opacity 50% checked
 
         let mut app = Self {
             menu_bar,
@@ -128,7 +141,8 @@ impl Application for GraphApp {
             scale_factor: 1.0,
             show_grid,
             uniform_background,
-            network_opacity,
+            cell_opacity,
+            gap_opacity,
             ui_context: clear_ui::context::UiContext::new(),
         };
         
@@ -171,32 +185,41 @@ impl Application for GraphApp {
                 self.needs_rebuild = true;
             }
             AppMessage::SetOpacity95 => {
-                self.network_opacity = 0.95;
-                self.graph.set_network_opacity(self.network_opacity);
+                self.cell_opacity = 0.95;
+                self.gap_opacity = 0.95;
+                self.graph.set_cell_opacity(0.95);
+                self.graph.set_gap_opacity(0.95);
                 self.menu_bar.set_item_checked(2, 2, true);
                 self.menu_bar.set_item_checked(2, 3, false);
                 self.menu_bar.set_item_checked(2, 4, false);
-                write_config_value("graph_network_opacity", "0.95");
+                write_config_value("graph_cell_opacity", "0.95");
+                write_config_value("graph_gap_opacity", "0.95");
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }
             AppMessage::SetOpacity75 => {
-                self.network_opacity = 0.75;
-                self.graph.set_network_opacity(self.network_opacity);
+                self.cell_opacity = 0.75;
+                self.gap_opacity = 0.75;
+                self.graph.set_cell_opacity(0.75);
+                self.graph.set_gap_opacity(0.75);
                 self.menu_bar.set_item_checked(2, 2, false);
                 self.menu_bar.set_item_checked(2, 3, true);
                 self.menu_bar.set_item_checked(2, 4, false);
-                write_config_value("graph_network_opacity", "0.75");
+                write_config_value("graph_cell_opacity", "0.75");
+                write_config_value("graph_gap_opacity", "0.75");
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }
             AppMessage::SetOpacity50 => {
-                self.network_opacity = 0.50;
-                self.graph.set_network_opacity(self.network_opacity);
+                self.cell_opacity = 0.50;
+                self.gap_opacity = 0.50;
+                self.graph.set_cell_opacity(0.50);
+                self.graph.set_gap_opacity(0.50);
                 self.menu_bar.set_item_checked(2, 2, false);
                 self.menu_bar.set_item_checked(2, 3, false);
                 self.menu_bar.set_item_checked(2, 4, true);
-                write_config_value("graph_network_opacity", "0.50");
+                write_config_value("graph_cell_opacity", "0.50");
+                write_config_value("graph_gap_opacity", "0.50");
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }
@@ -209,6 +232,9 @@ impl Application for GraphApp {
                     position: (2.0 + (next_id % 3) as f32, 2.0 + (next_id / 3) as f32),
                     parameters: vec![],
                     geom_visible: true,
+                    node_type: String::new(),
+                    inputs: 1,
+                    outputs: 1,
                 });
                 self.graph.set_nodes(&nodes);
                 *needs_rebuild = true;
@@ -372,14 +398,16 @@ impl Application for GraphApp {
     }
 }
 
-fn load_config() -> (bool, bool, bool, f32, f32) {
+fn load_config() -> (bool, bool, bool, f32, f32, f32) {
     let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.toml").unwrap_or_default();
     let show_grid = parse_bool_from(&content, "graph_show_grid", true);
     let snap_enabled = parse_bool_from(&content, "graph_snap_enabled", true);
     let uniform_background = parse_bool_from(&content, "graph_uniform_background", false);
-    let network_opacity = parse_f32_from(&content, "graph_network_opacity", 0.95);
+    let legacy_opacity = parse_f32_from(&content, "graph_network_opacity", 0.95);
+    let cell_opacity = parse_f32_from(&content, "graph_cell_opacity", legacy_opacity);
+    let gap_opacity = parse_f32_from(&content, "graph_gap_opacity", legacy_opacity);
     let gap_width = parse_f32_from(&content, "graph_gap_width", 35.0);
-    (show_grid, snap_enabled, uniform_background, network_opacity, gap_width)
+    (show_grid, snap_enabled, uniform_background, cell_opacity, gap_opacity, gap_width)
 }
 
 fn parse_bool_from(content: &str, key: &str, default: bool) -> bool {
