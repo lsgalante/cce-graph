@@ -1,7 +1,7 @@
 use wayland_client::QueueHandle;
 use glyphon::{FontSystem, Buffer, Metrics, Attrs};
-use clear_ui::engine::{Application, EngineState, LogicalPosition, LogicalSize, WindowSettings};
-use clear_ui::widget::{MouseButton, ElementState, MouseScrollDelta, KeyEvent, TextItem, Element, Graph, GraphNode, MenuBar, MenuController, GraphController};
+use cce_ui::engine::{Application, EngineState, LogicalPosition, LogicalSize, WindowSettings};
+use cce_ui::widget::{MouseButton, ElementState, MouseScrollDelta, KeyEvent, TextItem, Element, Graph, GraphNode, MenuBar, MenuController, GraphController};
 
 #[derive(Debug, Clone)]
 enum AppMessage {
@@ -27,7 +27,7 @@ struct GraphApp {
     uniform_background: bool,
     cell_opacity: f32,
     gap_opacity: f32,
-    ui_context: clear_ui::context::UiContext,
+    ui_context: cce_ui::context::UiContext,
 }
 
 impl GraphApp {
@@ -40,7 +40,7 @@ impl GraphApp {
         // 2. Collect labels from MenuBar widget
         labels.extend(self.menu_bar.text_labels_with_bounds(&self.ui_context));
         
-        let scale = clear_ui::scale::scale_factor();
+        let scale = cce_ui::scale::scale_factor();
         for (label, bounds) in labels {
             let physical_size = label.font_size * scale;
             let metrics = Metrics::new(physical_size, physical_size * 1.4);
@@ -143,7 +143,7 @@ impl Application for GraphApp {
             uniform_background,
             cell_opacity,
             gap_opacity,
-            ui_context: clear_ui::context::UiContext::new(),
+            ui_context: cce_ui::context::UiContext::new(),
         };
         
         app.menu_bar.set_rect(0.0, 0.0, 1024.0, 26.0);
@@ -474,5 +474,5 @@ fn main() {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let _guard = rt.enter();
 
-    clear_ui::engine::run::<GraphApp>();
+    cce_ui::engine::run::<GraphApp>();
 }
