@@ -399,75 +399,36 @@ impl Application for GraphApp {
 }
 
 fn load_config() -> (bool, bool, bool, f32, f32, f32) {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.toml").unwrap_or_default();
-    let show_grid = parse_bool_from(&content, "graph_show_grid", true);
-    let snap_enabled = parse_bool_from(&content, "graph_snap_enabled", true);
-    let uniform_background = parse_bool_from(&content, "graph_uniform_background", false);
-    let legacy_opacity = parse_f32_from(&content, "graph_network_opacity", 0.95);
-    let cell_opacity = parse_f32_from(&content, "graph_cell_opacity", legacy_opacity);
-    let gap_opacity = parse_f32_from(&content, "graph_gap_opacity", legacy_opacity);
-    let gap_width = parse_f32_from(&content, "graph_gap_width", 35.0);
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
+    let val: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
+    
+    let show_grid = val.pointer("/layout/graph_show_grid").and_then(|v| v.as_bool()).unwrap_or(true);
+    let snap_enabled = val.pointer("/layout/graph_snap_enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+    let uniform_background = val.pointer("/layout/graph_uniform_background").and_then(|v| v.as_bool()).unwrap_or(false);
+    let legacy_opacity = val.pointer("/layout/graph_network_opacity").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(0.95);
+    let cell_opacity = val.pointer("/layout/graph_cell_opacity").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(legacy_opacity);
+    let gap_opacity = val.pointer("/layout/graph_gap_opacity").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(legacy_opacity);
+    let gap_width = val.pointer("/layout/graph_gap_width").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(35.0);
+    
     (show_grid, snap_enabled, uniform_background, cell_opacity, gap_opacity, gap_width)
 }
 
-fn parse_bool_from(content: &str, key: &str, default: bool) -> bool {
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix(key) {
-            let rest = rest.trim_start_matches(|c: char| c == ' ' || c == '=' || c == '"');
-            let val_str = rest.trim_end_matches('"').trim();
-            if let Ok(val) = val_str.parse::<bool>() {
-                return val;
-            }
-        }
-    }
-    default
-}
-
-fn parse_f32_from(content: &str, key: &str, default: f32) -> f32 {
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix(key) {
-            let rest = rest.trim_start_matches(|c: char| c == ' ' || c == '=' || c == '"');
-            let val_str = rest.trim_end_matches('"').trim();
-            if let Ok(val) = val_str.parse::<f32>() {
-                return val;
-            }
-        }
-    }
-    default
-}
-
 fn write_config_value(key: &str, value: &str) -> bool {
-    let path = "/home/lsgalante/.config/cce/config.toml";
+    let path = "/home/lsgalante/.config/cce/config.json";
     let content = std::fs::read_to_string(path).unwrap_or_default();
-    let new_line = format!("{} = {}", key, value);
-    let mut found = false;
-    let updated: String = content.lines()
-        .map(|line| {
-            let trimmed = line.trim();
-            if trimmed.starts_with(key) {
-                found = true;
-                new_line.clone()
-            } else {
-                line.to_string()
-            }
-        }).collect::<Vec<_>>().join("\n");
-    if !found {
-        let mut result = String::new();
-        let mut in_layout = false;
-        let mut inserted = false;
-        for line in updated.lines() {
-            if line.trim() == "[layout]" { in_layout = true; }
-            else if line.trim().starts_with('[') && in_layout {
-                if !inserted { result.push_str(&new_line); result.push('\n'); inserted = true; }
-                in_layout = false;
-            }
-            result.push_str(line); result.push('\n');
+    let mut val: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
+    if let Some(obj) = val.get_mut("layout").and_then(|l| l.as_object_mut()) {
+        let j_val = if let Ok(parsed_val) = serde_json::from_str::<serde_json::Value>(value) {
+            parsed_val
+        } else {
+            serde_json::json!(value)
+        };
+        obj.insert(key.to_string(), j_val);
+        if let Ok(updated_str) = serde_json::to_string_pretty(&val) {
+            return std::fs::write(path, updated_str).is_ok();
         }
-        if in_layout && !inserted { result.push_str(&new_line); result.push('\n'); }
-        std::fs::write(path, result).is_ok()
-    } else { std::fs::write(path, updated).is_ok() }
+    }
+    false
 }
 
 fn main() {
