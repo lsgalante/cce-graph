@@ -61,6 +61,10 @@ impl GraphApp {
 impl Application for GraphApp {
     type Message = AppMessage;
 
+    fn ui_context(&self) -> Option<&cce_ui::context::UiContext> {
+        Some(&self.ui_context)
+    }
+
     fn new(_qh: &QueueHandle<EngineState<Self>>, _sender: calloop::channel::Sender<Self::Message>) -> Self {
         let mut graph = Graph::new();
         
