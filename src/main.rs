@@ -403,8 +403,9 @@ impl Application for GraphApp {
 }
 
 fn load_config() -> (bool, bool, bool, f32, f32, f32) {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
-    let val: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
+    let path = cce_ui::config::get_config_path();
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    let val = cce_ui::config::parse_kdl_to_json(&content);
     
     let show_grid = val.pointer("/layout/graph_show_grid").and_then(|v| v.as_bool()).unwrap_or(true);
     let snap_enabled = val.pointer("/layout/graph_snap_enabled").and_then(|v| v.as_bool()).unwrap_or(true);
@@ -418,21 +419,9 @@ fn load_config() -> (bool, bool, bool, f32, f32, f32) {
 }
 
 fn write_config_value(key: &str, value: &str) -> bool {
-    let path = "/home/lsgalante/.config/cce/config.json";
-    let content = std::fs::read_to_string(path).unwrap_or_default();
-    let mut val: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
-    if let Some(obj) = val.get_mut("layout").and_then(|l| l.as_object_mut()) {
-        let j_val = if let Ok(parsed_val) = serde_json::from_str::<serde_json::Value>(value) {
-            parsed_val
-        } else {
-            serde_json::json!(value)
-        };
-        obj.insert(key.to_string(), j_val);
-        if let Ok(updated_str) = serde_json::to_string_pretty(&val) {
-            return std::fs::write(path, updated_str).is_ok();
-        }
-    }
-    false
+    let path = cce_ui::config::get_config_path();
+    let path_str = path.to_string_lossy();
+    cce_ui::config::write_config_value(&path_str, key, value, "layout")
 }
 
 fn main() {
