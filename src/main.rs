@@ -2,6 +2,7 @@ use wayland_client::QueueHandle;
 use glyphon::{FontSystem, Buffer, Metrics, Attrs};
 use cce_ui::engine::{Application, EngineState, LogicalPosition, LogicalSize, WindowSettings};
 use cce_ui::widget::{MouseButton, ElementState, MouseScrollDelta, KeyEvent, TextItem, Element, Graph, GraphNode, MenuBar, MenuController, GraphController, WidgetId};
+use image::GenericImageView;
 
 #[derive(Debug, Clone)]
 enum AppMessage {
@@ -19,13 +20,30 @@ enum AppMessage {
     AddImage,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct GraphProjectImage {
+    path: String,
+    position: (f32, f32), // (column, row)
+    size: (f32, f32), // (w_cols, h_rows)
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct GraphProjectState {
     name: String,
     nodes: Vec<GraphNode>,
+    images: Vec<GraphProjectImage>,
     show_grid: bool,
     uniform_background: bool,
     opacity: f32,
+}
+
+struct LoadedImage {
+    path: String,
+    position: (f32, f32),
+    size: (f32, f32),
+    pixels: Vec<[u8; 4]>,
+    pixel_width: u32,
+    pixel_height: u32,
 }
 
 struct GraphApp {
@@ -43,6 +61,24 @@ struct GraphApp {
     opacity: f32,
     ui_context: cce_ui::context::UiContext,
     loaded_project_path: Option<std::path::PathBuf>,
+    loaded_images: Vec<LoadedImage>,
+}
+
+fn load_image_pixels(path: &std::path::Path) -> Option<(Vec<[u8; 4]>, u32, u32)> {
+    let img = image::open(path).ok()?;
+    let max_dim = 96;
+    let (w, h) = img.dimensions();
+    let (nw, nh) = if w > h {
+        (max_dim, (h as f32 * (max_dim as f32 / w as f32)) as u32)
+    } else {
+        ((w as f32 * (max_dim as f32 / h as f32)) as u32, max_dim)
+    };
+    let img = img.resize_exact(nw, nh, image::imageops::FilterType::Triangle);
+    let rgba = img.to_rgba8();
+    let pixels = rgba.chunks_exact(4)
+        .map(|c| [c[0], c[1], c[2], c[3]])
+        .collect();
+    Some((pixels, nw, nh))
 }
 
 impl GraphApp {
@@ -74,6 +110,7 @@ impl GraphApp {
 
     fn new_project(&mut self) {
         self.graph.set_nodes(&[]);
+        self.loaded_images.clear();
         self.loaded_project_path = None;
         self.needs_rebuild = true;
     }
@@ -88,12 +125,21 @@ impl GraphApp {
 
         let state_file_path = project_dir.join("state.json");
 
+        let project_images: Vec<GraphProjectImage> = self.loaded_images.iter()
+            .map(|img| GraphProjectImage {
+                path: img.path.clone(),
+                position: img.position,
+                size: img.size,
+            })
+            .collect();
+
         let state = GraphProjectState {
             name: project_dir.file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("Graph Project")
                 .to_string(),
             nodes: self.graph.get_nodes(),
+            images: project_images,
             show_grid: self.show_grid,
             uniform_background: self.uniform_background,
             opacity: self.opacity,
@@ -126,6 +172,29 @@ impl GraphApp {
         self.uniform_background = state.uniform_background;
         self.opacity = state.opacity;
 
+        // Load images
+        self.loaded_images.clear();
+        for img in state.images {
+            let image_path = if std::path::Path::new(&img.path).is_absolute() {
+                std::path::PathBuf::from(&img.path)
+            } else {
+                project_dir.join(&img.path)
+            };
+
+            if let Some((pixels, pw, ph)) = load_image_pixels(&image_path) {
+                self.loaded_images.push(LoadedImage {
+                    path: img.path.clone(),
+                    position: img.position,
+                    size: img.size,
+                    pixels,
+                    pixel_width: pw,
+                    pixel_height: ph,
+                });
+            } else {
+                eprintln!("Warning: Failed to load image at {:?}", image_path);
+            }
+        }
+
         // Apply grid/background settings to self.graph
         self.graph.set_show_network_grid(self.show_grid);
         self.graph.set_uniform_background(self.uniform_background);
@@ -143,7 +212,7 @@ impl GraphApp {
         Ok(())
     }
 
-    fn add_image_node(&mut self, src_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    fn add_image(&mut self, src_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
         let image_name = src_path.file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "image.png".to_string());
@@ -153,27 +222,29 @@ impl GraphApp {
             std::fs::create_dir_all(&dest_dir)?;
             let dest_path = dest_dir.join(&image_name);
             std::fs::copy(src_path, &dest_path)?;
-            // Save relative path to state
             format!("assets/{}", image_name)
         } else {
-            // If no project loaded, use the absolute path
             src_path.to_string_lossy().to_string()
         };
 
-        let mut nodes = self.graph.get_nodes();
-        let next_id = nodes.len() + 1;
-        nodes.push(GraphNode {
-            id: String::new(),
-            name: image_name,
-            position: (2.0 + (next_id % 3) as f32, 2.0 + (next_id / 3) as f32),
-            parameters: vec![("image".to_string(), final_path, "string".to_string())],
-            geom_visible: true,
-            node_type: "image".to_string(),
-            inputs: 0,
-            outputs: 1,
-        });
-        self.graph.set_nodes(&nodes);
-        self.needs_rebuild = true;
+        if let Some((pixels, pw, ph)) = load_image_pixels(src_path) {
+            let aspect = ph as f32 / pw as f32;
+            let size_w = 4.0;
+            let size_h = size_w * aspect;
+            
+            let col = 2.0;
+            let row = 2.0 + self.loaded_images.len() as f32 * 5.0;
+
+            self.loaded_images.push(LoadedImage {
+                path: final_path,
+                position: (col, row),
+                size: (size_w, size_h),
+                pixels,
+                pixel_width: pw,
+                pixel_height: ph,
+            });
+            self.needs_rebuild = true;
+        }
         Ok(())
     }
 }
@@ -270,6 +341,7 @@ impl Application for GraphApp {
             opacity,
             ui_context: cce_ui::context::UiContext::new(),
             loaded_project_path: None,
+            loaded_images: Vec::new(),
         };
         
         app.menu_bar.set_rect(0.0, 0.0, 1024.0, 26.0);
@@ -406,7 +478,7 @@ impl Application for GraphApp {
                 let exts: &[&str] = &["png", "jpg", "jpeg", "gif", "bmp"];
                 let filters = [("Images", exts)];
                 if let Some(path) = cce_ui::file_dialog::pick_file("Select Image", &filters) {
-                    if let Err(e) = self.add_image_node(&path) {
+                    if let Err(e) = self.add_image(&path) {
                         eprintln!("Failed to add image: {:?}", e);
                     }
                 }
@@ -460,6 +532,63 @@ impl Application for GraphApp {
             let (gx, gy, gw, gh) = self.graph.rect();
             quads.push((gx, gy, gw, gh, graph_color));
         }
+
+        // Draw background images in the graph grid
+        let (grid_origin_x, grid_origin_y) = self.graph.grid_origin();
+        let (grid_size_x, grid_size_y) = self.graph.grid_sizes();
+        let (skipped_row_h, skipped_col_w) = self.graph.skipped_sizes();
+        
+        let step_x = grid_size_x + skipped_col_w;
+        let step_y = grid_size_y + skipped_row_h;
+
+        let (graph_x, graph_y, graph_w, graph_h) = self.graph.rect();
+        let min_x = graph_x;
+        let min_y = graph_y;
+        let max_x = graph_x + graph_w;
+        let max_y = graph_y + graph_h;
+
+        let push_clipped = |qx: f32, qy: f32, qw: f32, qh: f32, qc: [f32; 4], q: &mut Vec<(f32, f32, f32, f32, [f32; 4])>| {
+            let rx1 = qx.max(min_x);
+            let ry1 = qy.max(min_y);
+            let rx2 = (qx + qw).min(max_x);
+            let ry2 = (qy + qh).min(max_y);
+            let rw = rx2 - rx1;
+            let rh = ry2 - ry1;
+            if rw > 0.0 && rh > 0.0 {
+                q.push((rx1, ry1, rw, rh, qc));
+            }
+        };
+
+        for img in &self.loaded_images {
+            let col = img.position.0;
+            let row = img.position.1;
+            
+            let screen_x = grid_origin_x + col * step_x;
+            let screen_y = grid_origin_y + row * step_y;
+            
+            let screen_w = img.size.0 * grid_size_x + (img.size.0 - 1.0).max(0.0) * skipped_col_w;
+            let screen_h = img.size.1 * grid_size_y + (img.size.1 - 1.0).max(0.0) * skipped_row_h;
+            
+            let px_w = screen_w / img.pixel_width as f32;
+            let px_h = screen_h / img.pixel_height as f32;
+            
+            for y in 0..img.pixel_height {
+                for x in 0..img.pixel_width {
+                    let idx = (y * img.pixel_width + x) as usize;
+                    let rgba = img.pixels[idx];
+                    let r = rgba[0] as f32 / 255.0;
+                    let g = rgba[1] as f32 / 255.0;
+                    let b = rgba[2] as f32 / 255.0;
+                    let a = (rgba[3] as f32 / 255.0) * self.opacity;
+                    
+                    let px_x = screen_x + (x as f32) * px_w;
+                    let px_y = screen_y + (y as f32) * px_h;
+                    
+                    push_clipped(px_x, px_y, px_w + 0.5, px_h + 0.5, [r, g, b, a], quads);
+                }
+            }
+        }
+
         quads.extend(self.graph.extra_quads());
 
         // 3. Add MenuBar background and highlights/dropdowns
