@@ -533,7 +533,9 @@ impl Application for GraphApp {
             quads.push((gx, gy, gw, gh, graph_color));
         }
 
-        // Draw background images in the graph grid
+        quads.extend(self.graph.extra_quads());
+
+        // Draw foreground images in the graph grid (above nodes, fully opaque, preserving aspect ratio)
         let (grid_origin_x, grid_origin_y) = self.graph.grid_origin();
         let (grid_size_x, grid_size_y) = self.graph.grid_sizes();
         let (skipped_row_h, skipped_col_w) = self.graph.skipped_sizes();
@@ -567,7 +569,8 @@ impl Application for GraphApp {
             let screen_y = grid_origin_y + row * step_y;
             
             let screen_w = img.size.0 * grid_size_x + (img.size.0 - 1.0).max(0.0) * skipped_col_w;
-            let screen_h = img.size.1 * grid_size_y + (img.size.1 - 1.0).max(0.0) * skipped_row_h;
+            let aspect = img.pixel_height as f32 / img.pixel_width as f32;
+            let screen_h = screen_w * aspect;
             
             let px_w = screen_w / img.pixel_width as f32;
             let px_h = screen_h / img.pixel_height as f32;
@@ -579,7 +582,7 @@ impl Application for GraphApp {
                     let r = rgba[0] as f32 / 255.0;
                     let g = rgba[1] as f32 / 255.0;
                     let b = rgba[2] as f32 / 255.0;
-                    let a = (rgba[3] as f32 / 255.0) * self.opacity;
+                    let a = rgba[3] as f32 / 255.0;
                     
                     let px_x = screen_x + (x as f32) * px_w;
                     let px_y = screen_y + (y as f32) * px_h;
@@ -588,8 +591,6 @@ impl Application for GraphApp {
                 }
             }
         }
-
-        quads.extend(self.graph.extra_quads());
 
         // 3. Add MenuBar background and highlights/dropdowns
         let mb_color = self.menu_bar.color();
