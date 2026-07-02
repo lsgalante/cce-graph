@@ -5,6 +5,10 @@ use cce_ui::widget::{MouseButton, ElementState, MouseScrollDelta, KeyEvent, Text
 
 #[derive(Debug, Clone)]
 enum AppMessage {
+    New,
+    Open,
+    Save,
+    SaveAs,
     Exit,
     ToggleGrid,
     ToggleUniformBackground,
@@ -12,6 +16,15 @@ enum AppMessage {
     SetOpacity75,
     SetOpacity50,
     AddNode,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct GraphProjectState {
+    name: String,
+    nodes: Vec<GraphNode>,
+    show_grid: bool,
+    uniform_background: bool,
+    opacity: f32,
 }
 
 struct GraphApp {
@@ -28,6 +41,7 @@ struct GraphApp {
     uniform_background: bool,
     opacity: f32,
     ui_context: cce_ui::context::UiContext,
+    loaded_project_path: Option<std::path::PathBuf>,
 }
 
 impl GraphApp {
@@ -55,6 +69,77 @@ impl GraphApp {
                 bounds,
             });
         }
+    }
+
+    fn new_project(&mut self) {
+        self.graph.set_nodes(&[]);
+        self.loaded_project_path = None;
+        self.needs_rebuild = true;
+    }
+
+    fn save_project_to_path(&mut self, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+        let project_dir = path;
+        std::fs::create_dir_all(project_dir)?;
+
+        // Create assets and code subdirectories
+        std::fs::create_dir_all(project_dir.join("assets"))?;
+        std::fs::create_dir_all(project_dir.join("code"))?;
+
+        let state_file_path = project_dir.join("state.json");
+
+        let state = GraphProjectState {
+            name: project_dir.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("Graph Project")
+                .to_string(),
+            nodes: self.graph.get_nodes(),
+            show_grid: self.show_grid,
+            uniform_background: self.uniform_background,
+            opacity: self.opacity,
+        };
+
+        let content = serde_json::to_string_pretty(&state)?;
+        std::fs::write(&state_file_path, content)?;
+        
+        self.loaded_project_path = Some(project_dir.to_path_buf());
+        self.needs_rebuild = true;
+        Ok(())
+    }
+
+    fn load_project_from_path(&mut self, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+        let (state_file_path, project_dir) = if path.is_dir() {
+            (path.join("state.json"), path.to_path_buf())
+        } else {
+            if path.file_name().map_or(false, |name| name == "state.json") {
+                (path.to_path_buf(), path.parent().unwrap_or(path).to_path_buf())
+            } else {
+                (path.to_path_buf(), path.parent().unwrap_or(path).to_path_buf())
+            }
+        };
+
+        let content = std::fs::read_to_string(&state_file_path)?;
+        let state: GraphProjectState = serde_json::from_str(&content)?;
+
+        self.graph.set_nodes(&state.nodes);
+        self.show_grid = state.show_grid;
+        self.uniform_background = state.uniform_background;
+        self.opacity = state.opacity;
+
+        // Apply grid/background settings to self.graph
+        self.graph.set_show_network_grid(self.show_grid);
+        self.graph.set_uniform_background(self.uniform_background);
+        self.graph.set_network_opacity(self.opacity);
+
+        // Update menu bar checkboxes
+        self.menu_bar.set_item_checked(2, 0, self.show_grid);
+        self.menu_bar.set_item_checked(2, 1, self.uniform_background);
+        self.menu_bar.set_item_checked(2, 2, (self.opacity - 0.95).abs() < 0.05);
+        self.menu_bar.set_item_checked(2, 3, (self.opacity - 0.75).abs() < 0.05);
+        self.menu_bar.set_item_checked(2, 4, (self.opacity - 0.50).abs() < 0.05);
+
+        self.loaded_project_path = Some(project_dir);
+        self.needs_rebuild = true;
+        Ok(())
     }
 }
 
@@ -117,7 +202,7 @@ impl Application for GraphApp {
         // Build Menu Bar with options to toggle new features
         let mut menu_bar = MenuBar::new(0.0, 0.0, 1024.0, 26.0)
             .with_title("cce-graph")
-            .with_item("File", &["Exit"])
+            .with_item("File", &["New", "Open", "Save", "Save As", "Exit"])
             .with_item("Edit", &["Add Node"])
             .with_item("View", &[
                 "Show Grid",
@@ -149,6 +234,7 @@ impl Application for GraphApp {
             uniform_background,
             opacity,
             ui_context: cce_ui::context::UiContext::new(),
+            loaded_project_path: None,
         };
         
         app.menu_bar.set_rect(0.0, 0.0, 1024.0, 26.0);
@@ -158,8 +244,15 @@ impl Application for GraphApp {
     }
 
     fn settings(&self) -> WindowSettings {
+        let mut title = "CCE Graph".to_string();
+        if let Some(ref path) = self.loaded_project_path {
+            if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+                title.push_str(" - ");
+                title.push_str(filename);
+            }
+        }
         WindowSettings {
-            title: "CCE Graph".to_string(),
+            title,
             app_id: "cce-graph".to_string(),
             width: 1024,
             height: 768,
@@ -170,6 +263,44 @@ impl Application for GraphApp {
 
     fn update(&mut self, msg: Self::Message, needs_rebuild: &mut bool, exit: &mut bool) {
         match msg {
+            AppMessage::New => {
+                self.new_project();
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            }
+            AppMessage::Open => {
+                if let Some(path) = cce_ui::file_dialog::pick_file("Open CCE Graph Project", &[]) {
+                    if let Err(e) = self.load_project_from_path(&path) {
+                        eprintln!("Failed to load project: {:?}", e);
+                    }
+                }
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            }
+            AppMessage::Save => {
+                if let Some(path) = self.loaded_project_path.clone() {
+                    if let Err(e) = self.save_project_to_path(&path) {
+                        eprintln!("Failed to save project: {:?}", e);
+                    }
+                } else {
+                    if let Some(path) = cce_ui::file_dialog::save_file("Save CCE Graph Project", &[]) {
+                        if let Err(e) = self.save_project_to_path(&path) {
+                            eprintln!("Failed to save project: {:?}", e);
+                        }
+                    }
+                }
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            }
+            AppMessage::SaveAs => {
+                if let Some(path) = cce_ui::file_dialog::save_file("Save CCE Graph Project As", &[]) {
+                    if let Err(e) = self.save_project_to_path(&path) {
+                        eprintln!("Failed to save project: {:?}", e);
+                    }
+                }
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            }
             AppMessage::Exit => {
                 *exit = true;
             }
@@ -346,8 +477,13 @@ impl Application for GraphApp {
                 // Check if a dropdown menu item was clicked
                 if let Some((menu_idx, item_idx)) = self.menu_bar.menu_click() {
                     if menu_idx == 0 { // File
-                        if item_idx == 0 { // Exit
-                            msg_out = Some(AppMessage::Exit);
+                        match item_idx {
+                            0 => msg_out = Some(AppMessage::New),
+                            1 => msg_out = Some(AppMessage::Open),
+                            2 => msg_out = Some(AppMessage::Save),
+                            3 => msg_out = Some(AppMessage::SaveAs),
+                            4 => msg_out = Some(AppMessage::Exit),
+                            _ => {}
                         }
                     } else if menu_idx == 1 { // Edit
                         if item_idx == 0 { // Add Node
