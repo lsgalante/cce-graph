@@ -1,7 +1,7 @@
 use wayland_client::QueueHandle;
 use glyphon::{FontSystem, Buffer, Metrics, Attrs};
 use cce_ui::engine::{Application, EngineState, LogicalPosition, LogicalSize, WindowSettings};
-use cce_ui::widget::{MouseButton, ElementState, MouseScrollDelta, KeyEvent, TextItem, Element, Graph, GraphNode, MenuBar, MenuController, GraphController};
+use cce_ui::widget::{MouseButton, ElementState, MouseScrollDelta, KeyEvent, TextItem, Element, Graph, GraphNode, MenuBar, MenuController, GraphController, WidgetId};
 
 #[derive(Debug, Clone)]
 enum AppMessage {
@@ -17,6 +17,7 @@ enum AppMessage {
 struct GraphApp {
     menu_bar: MenuBar,
     graph: Graph,
+    graph_id: WidgetId,
     text_items: Vec<TextItem>,
     font_system: FontSystem,
     needs_rebuild: bool,
@@ -25,8 +26,7 @@ struct GraphApp {
     scale_factor: f64,
     show_grid: bool,
     uniform_background: bool,
-    cell_opacity: f32,
-    gap_opacity: f32,
+    opacity: f32,
     ui_context: cce_ui::context::UiContext,
 }
 
@@ -103,7 +103,7 @@ impl Application for GraphApp {
         ];
         graph.set_nodes(&nodes);
         
-        let (show_grid, snap_enabled, uniform_background, cell_opacity, gap_opacity, gap_width) = load_config();
+        let (show_grid, snap_enabled, uniform_background, opacity, gap_width) = load_config();
 
         // Configure initial grid settings on the graph
         graph.set_show_network_grid(show_grid);
@@ -112,8 +112,7 @@ impl Application for GraphApp {
         graph.set_grid_origin(60.0, 60.0);
         graph.set_grid_snap_enabled(snap_enabled);
         graph.set_uniform_background(uniform_background);
-        graph.set_cell_opacity(cell_opacity);
-        graph.set_gap_opacity(gap_opacity);
+        graph.set_network_opacity(opacity);
 
         // Build Menu Bar with options to toggle new features
         let mut menu_bar = MenuBar::new(0.0, 0.0, 1024.0, 26.0)
@@ -130,13 +129,16 @@ impl Application for GraphApp {
             
         menu_bar.set_item_checked(2, 0, show_grid);  // Show Grid checked
         menu_bar.set_item_checked(2, 1, uniform_background); // Uniform Background unchecked
-        menu_bar.set_item_checked(2, 2, (cell_opacity - 0.95).abs() < 0.05);  // Opacity 95% checked
-        menu_bar.set_item_checked(2, 3, (cell_opacity - 0.75).abs() < 0.05);  // Opacity 75% checked
-        menu_bar.set_item_checked(2, 4, (cell_opacity - 0.50).abs() < 0.05);  // Opacity 50% checked
+        menu_bar.set_item_checked(2, 2, (opacity - 0.95).abs() < 0.05);  // Opacity 95% checked
+        menu_bar.set_item_checked(2, 3, (opacity - 0.75).abs() < 0.05);  // Opacity 75% checked
+        menu_bar.set_item_checked(2, 4, (opacity - 0.50).abs() < 0.05);  // Opacity 50% checked
+
+        let graph_id = WidgetId(cce_ui::widget::NEXT_WIDGET_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
 
         let mut app = Self {
             menu_bar,
             graph,
+            graph_id,
             text_items: Vec::new(),
             font_system: FontSystem::new(),
             needs_rebuild: true,
@@ -145,8 +147,7 @@ impl Application for GraphApp {
             scale_factor: 1.0,
             show_grid,
             uniform_background,
-            cell_opacity,
-            gap_opacity,
+            opacity,
             ui_context: cce_ui::context::UiContext::new(),
         };
         
@@ -189,41 +190,32 @@ impl Application for GraphApp {
                 self.needs_rebuild = true;
             }
             AppMessage::SetOpacity95 => {
-                self.cell_opacity = 0.95;
-                self.gap_opacity = 0.95;
-                self.graph.set_cell_opacity(0.95);
-                self.graph.set_gap_opacity(0.95);
+                self.opacity = 0.95;
+                self.graph.set_network_opacity(0.95);
                 self.menu_bar.set_item_checked(2, 2, true);
                 self.menu_bar.set_item_checked(2, 3, false);
                 self.menu_bar.set_item_checked(2, 4, false);
-                write_config_value("graph_cell_opacity", "0.95");
-                write_config_value("graph_gap_opacity", "0.95");
+                write_config_value("graph_network_opacity", "0.95");
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }
             AppMessage::SetOpacity75 => {
-                self.cell_opacity = 0.75;
-                self.gap_opacity = 0.75;
-                self.graph.set_cell_opacity(0.75);
-                self.graph.set_gap_opacity(0.75);
+                self.opacity = 0.75;
+                self.graph.set_network_opacity(0.75);
                 self.menu_bar.set_item_checked(2, 2, false);
                 self.menu_bar.set_item_checked(2, 3, true);
                 self.menu_bar.set_item_checked(2, 4, false);
-                write_config_value("graph_cell_opacity", "0.75");
-                write_config_value("graph_gap_opacity", "0.75");
+                write_config_value("graph_network_opacity", "0.75");
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }
             AppMessage::SetOpacity50 => {
-                self.cell_opacity = 0.50;
-                self.gap_opacity = 0.50;
-                self.graph.set_cell_opacity(0.50);
-                self.graph.set_gap_opacity(0.50);
+                self.opacity = 0.50;
+                self.graph.set_network_opacity(0.50);
                 self.menu_bar.set_item_checked(2, 2, false);
                 self.menu_bar.set_item_checked(2, 3, false);
                 self.menu_bar.set_item_checked(2, 4, true);
-                write_config_value("graph_cell_opacity", "0.50");
-                write_config_value("graph_gap_opacity", "0.50");
+                write_config_value("graph_network_opacity", "0.50");
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }
@@ -250,6 +242,20 @@ impl Application for GraphApp {
     fn tick(&mut self, _dt: f32, _needs_rebuild: &mut bool) {}
 
     fn view(&mut self, quads: &mut Vec<(f32, f32, f32, f32, [f32; 4])>, size: LogicalSize, scale: f64) {
+        self.ui_context.clear_popovers();
+        cce_ui::widget::popovers::clear();
+
+        // Register widgets with correct, stable self addresses
+        let menu_ptr = &mut self.menu_bar as *mut MenuBar as *mut (dyn Element + 'static);
+        let graph_ptr = &mut self.graph as *mut Graph as *mut (dyn Element + 'static);
+        self.ui_context.register_widget(self.menu_bar.base.id(), menu_ptr);
+        self.ui_context.register_widget(self.graph_id, graph_ptr);
+
+        if self.menu_bar.popover_rect().is_some() {
+            self.ui_context.register_popover(&self.menu_bar);
+            cce_ui::widget::popovers::register(&self.menu_bar);
+        }
+
         let size_changed = self.width != size.width as u32 || self.height != size.height as u32 || self.scale_factor != scale;
         if self.needs_rebuild || size_changed {
             self.width = size.width as u32;
@@ -264,6 +270,8 @@ impl Application for GraphApp {
             
             self.rebuild_text_items();
             self.needs_rebuild = false;
+
+            self.ui_context.rebuild_spatial_grid();
         }
 
         // 1. Background quad (outer window color)
@@ -290,6 +298,10 @@ impl Application for GraphApp {
 
     fn text_items(&self) -> &[TextItem] {
         &self.text_items
+    }
+
+    fn render_popovers(&self, pc: &mut dyn cce_ui::layout::RenderTarget) {
+        cce_ui::layout::render_popovers(pc, &self.ui_context);
     }
 
     fn handle_pointer_move(&mut self, pos: LogicalPosition, needs_rebuild: &mut bool) {
@@ -402,7 +414,7 @@ impl Application for GraphApp {
     }
 }
 
-fn load_config() -> (bool, bool, bool, f32, f32, f32) {
+fn load_config() -> (bool, bool, bool, f32, f32) {
     let path = cce_ui::config::get_config_path();
     let content = std::fs::read_to_string(&path).unwrap_or_default();
     let val = cce_ui::config::parse_kdl_to_json(&content);
@@ -410,12 +422,10 @@ fn load_config() -> (bool, bool, bool, f32, f32, f32) {
     let show_grid = val.pointer("/layout/graph_show_grid").and_then(|v| v.as_bool()).unwrap_or(true);
     let snap_enabled = val.pointer("/layout/graph_snap_enabled").and_then(|v| v.as_bool()).unwrap_or(true);
     let uniform_background = val.pointer("/layout/graph_uniform_background").and_then(|v| v.as_bool()).unwrap_or(false);
-    let legacy_opacity = val.pointer("/layout/graph_network_opacity").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(0.95);
-    let cell_opacity = val.pointer("/layout/graph_cell_opacity").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(legacy_opacity);
-    let gap_opacity = val.pointer("/layout/graph_gap_opacity").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(legacy_opacity);
+    let opacity = val.pointer("/layout/graph_network_opacity").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(0.95);
     let gap_width = val.pointer("/layout/graph_gap_width").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(35.0);
     
-    (show_grid, snap_enabled, uniform_background, cell_opacity, gap_opacity, gap_width)
+    (show_grid, snap_enabled, uniform_background, opacity, gap_width)
 }
 
 fn write_config_value(key: &str, value: &str) -> bool {
