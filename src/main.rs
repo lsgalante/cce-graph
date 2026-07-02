@@ -16,6 +16,7 @@ enum AppMessage {
     SetOpacity75,
     SetOpacity50,
     AddNode,
+    AddImage,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -141,6 +142,40 @@ impl GraphApp {
         self.needs_rebuild = true;
         Ok(())
     }
+
+    fn add_image_node(&mut self, src_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+        let image_name = src_path.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "image.png".to_string());
+
+        let final_path = if let Some(ref project_dir) = self.loaded_project_path {
+            let dest_dir = project_dir.join("assets");
+            std::fs::create_dir_all(&dest_dir)?;
+            let dest_path = dest_dir.join(&image_name);
+            std::fs::copy(src_path, &dest_path)?;
+            // Save relative path to state
+            format!("assets/{}", image_name)
+        } else {
+            // If no project loaded, use the absolute path
+            src_path.to_string_lossy().to_string()
+        };
+
+        let mut nodes = self.graph.get_nodes();
+        let next_id = nodes.len() + 1;
+        nodes.push(GraphNode {
+            id: String::new(),
+            name: image_name,
+            position: (2.0 + (next_id % 3) as f32, 2.0 + (next_id / 3) as f32),
+            parameters: vec![("image".to_string(), final_path, "string".to_string())],
+            geom_visible: true,
+            node_type: "image".to_string(),
+            inputs: 0,
+            outputs: 1,
+        });
+        self.graph.set_nodes(&nodes);
+        self.needs_rebuild = true;
+        Ok(())
+    }
 }
 
 impl Application for GraphApp {
@@ -203,7 +238,7 @@ impl Application for GraphApp {
         let mut menu_bar = MenuBar::new(0.0, 0.0, 1024.0, 26.0)
             .with_title("cce-graph")
             .with_item("File", &["New", "Open", "Save", "Save As", "Exit"])
-            .with_item("Edit", &["Add Node"])
+            .with_item("Edit", &["Add Node", "Add Image"])
             .with_item("View", &[
                 "Show Grid",
                 "Uniform Background",
@@ -367,6 +402,17 @@ impl Application for GraphApp {
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }
+            AppMessage::AddImage => {
+                let exts: &[&str] = &["png", "jpg", "jpeg", "gif", "bmp"];
+                let filters = [("Images", exts)];
+                if let Some(path) = cce_ui::file_dialog::pick_file("Select Image", &filters) {
+                    if let Err(e) = self.add_image_node(&path) {
+                        eprintln!("Failed to add image: {:?}", e);
+                    }
+                }
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            }
         }
     }
 
@@ -486,8 +532,10 @@ impl Application for GraphApp {
                             _ => {}
                         }
                     } else if menu_idx == 1 { // Edit
-                        if item_idx == 0 { // Add Node
-                            msg_out = Some(AppMessage::AddNode);
+                        match item_idx {
+                            0 => msg_out = Some(AppMessage::AddNode),
+                            1 => msg_out = Some(AppMessage::AddImage),
+                            _ => {}
                         }
                     } else if menu_idx == 2 { // View
                         match item_idx {
