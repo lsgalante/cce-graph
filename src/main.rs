@@ -656,12 +656,7 @@ impl Application for GraphApp {
         // 1. Root window / child quads collected recursively (includes MenuBar background when flat, Graph extra quads, etc.)
         quads.extend(self.root_window.all_quads(&self.ui_context));
 
-        // 2. Add Graph background color manually if uniform background is active (Graph uses default all_quads which doesn't push it)
-        let graph_color = self.graph.color();
-        if graph_color[3] > 0.0 {
-            let (gx, gy, gw, gh) = self.graph.rect();
-            quads.push((gx, gy, gw, gh, graph_color));
-        }
+
 
         // Draw foreground images in the graph grid (above nodes, fully opaque, preserving aspect ratio)
         let (grid_origin_x, grid_origin_y) = self.graph.grid_origin();
