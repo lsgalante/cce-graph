@@ -306,7 +306,8 @@ impl Application for GraphApp {
         graph.set_network_opacity(opacity);
 
         // Build Menu Bar with options to toggle new features
-        let mut menu_bar = MenuBar::new(0.0, 0.0, 1024.0, 26.0)
+        let mut menu_bar = MenuBar::new(0.0, 0.0, 1024.0, 42.0)
+            .with_color([0.08, 0.08, 0.12, 1.0])
             .with_title("cce-graph")
             .with_item("File", &["New", "Open", "Save", "Save As", "Exit"])
             .with_item("Edit", &["Add Node", "Add Image"])
@@ -344,8 +345,8 @@ impl Application for GraphApp {
             loaded_images: Vec::new(),
         };
         
-        app.menu_bar.set_rect(0.0, 0.0, 1024.0, 26.0);
-        app.graph.set_rect(0.0, 26.0, 1024.0, 768.0 - 26.0);
+        app.menu_bar.set_rect(0.0, 0.0, 1024.0, 42.0);
+        app.graph.set_rect(0.0, 42.0, 1024.0, 768.0 - 42.0);
         app.rebuild_text_items();
         app
     }
@@ -512,10 +513,10 @@ impl Application for GraphApp {
             self.scale_factor = scale;
             
             // Layout MenuBar at the top
-            self.menu_bar.set_rect(0.0, 0.0, size.width, 26.0);
+            self.menu_bar.set_rect(0.0, 0.0, size.width, 42.0);
             
             // Layout Graph below MenuBar
-            self.graph.set_rect(0.0, 26.0, size.width, size.height - 26.0);
+            self.graph.set_rect(0.0, 42.0, size.width, size.height - 42.0);
             
             self.rebuild_text_items();
             self.needs_rebuild = false;
