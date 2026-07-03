@@ -11,6 +11,7 @@ enum AppMessage {
     OpenRecent(std::path::PathBuf),
     Save,
     SaveAs,
+    SaveToPath(std::path::PathBuf),
     Exit,
     ToggleGrid,
     ToggleUniformBackground,
@@ -19,6 +20,7 @@ enum AppMessage {
     SetOpacity50,
     AddNode,
     AddImage,
+    AddImageFromPath(std::path::PathBuf),
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -68,6 +70,7 @@ struct GraphApp {
     loaded_project_path: Option<std::path::PathBuf>,
     loaded_images: Vec<LoadedImage>,
     widgets_registered: bool,
+    message_sender: calloop::channel::Sender<AppMessage>,
 }
 
 fn get_view_options(show_grid: bool, uniform_bg: bool, opacity: f32) -> Vec<String> {
@@ -489,6 +492,7 @@ impl Application for GraphApp {
             loaded_project_path: None,
             loaded_images: Vec::new(),
             widgets_registered: false,
+            message_sender: _sender.clone(),
         };
         
         app.root_window.set_rect(0.0, 0.0, 1024.0, 768.0);
@@ -527,15 +531,12 @@ impl Application for GraphApp {
                 self.needs_rebuild = true;
             }
             AppMessage::Open => {
-                if let Some(path) = cce_ui::file_dialog::pick_file("Open CCE Graph Project", &[]) {
-                    if let Err(e) = self.load_project_from_path(&path) {
-                        eprintln!("Failed to load project: {:?}", e);
-                    } else {
-                        self.add_recent_file(&path);
+                let sender = self.message_sender.clone();
+                std::thread::spawn(move || {
+                    if let Some(path) = cce_ui::file_dialog::pick_file("Open CCE Graph Project", &[]) {
+                        let _ = sender.send(AppMessage::OpenRecent(path));
                     }
-                }
-                *needs_rebuild = true;
-                self.needs_rebuild = true;
+                });
             }
             AppMessage::OpenRecent(path) => {
                 if let Err(e) = self.load_project_from_path(&path) {
@@ -553,25 +554,30 @@ impl Application for GraphApp {
                     } else {
                         self.add_recent_file(&path);
                     }
+                    *needs_rebuild = true;
+                    self.needs_rebuild = true;
                 } else {
-                    if let Some(path) = cce_ui::file_dialog::save_file("Save CCE Graph Project", &[]) {
-                        if let Err(e) = self.save_project_to_path(&path) {
-                            eprintln!("Failed to save project: {:?}", e);
-                        } else {
-                            self.add_recent_file(&path);
+                    let sender = self.message_sender.clone();
+                    std::thread::spawn(move || {
+                        if let Some(path) = cce_ui::file_dialog::save_file("Save CCE Graph Project", &[]) {
+                            let _ = sender.send(AppMessage::SaveToPath(path));
                         }
-                    }
+                    });
                 }
-                *needs_rebuild = true;
-                self.needs_rebuild = true;
             }
             AppMessage::SaveAs => {
-                if let Some(path) = cce_ui::file_dialog::save_file("Save CCE Graph Project As", &[]) {
-                    if let Err(e) = self.save_project_to_path(&path) {
-                        eprintln!("Failed to save project: {:?}", e);
-                    } else {
-                        self.add_recent_file(&path);
+                let sender = self.message_sender.clone();
+                std::thread::spawn(move || {
+                    if let Some(path) = cce_ui::file_dialog::save_file("Save CCE Graph Project As", &[]) {
+                        let _ = sender.send(AppMessage::SaveToPath(path));
                     }
+                });
+            }
+            AppMessage::SaveToPath(path) => {
+                if let Err(e) = self.save_project_to_path(&path) {
+                    eprintln!("Failed to save project: {:?}", e);
+                } else {
+                    self.add_recent_file(&path);
                 }
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
@@ -637,12 +643,18 @@ impl Application for GraphApp {
                 self.needs_rebuild = true;
             }
             AppMessage::AddImage => {
-                let exts: &[&str] = &["png", "jpg", "jpeg", "gif", "bmp"];
-                let filters = [("Images", exts)];
-                if let Some(path) = cce_ui::file_dialog::pick_file("Select Image", &filters) {
-                    if let Err(e) = self.add_image(&path) {
-                        eprintln!("Failed to add image: {:?}", e);
+                let sender = self.message_sender.clone();
+                std::thread::spawn(move || {
+                    let exts: &[&str] = &["png", "jpg", "jpeg", "gif", "bmp"];
+                    let filters = [("Images", exts)];
+                    if let Some(path) = cce_ui::file_dialog::pick_file("Select Image", &filters) {
+                        let _ = sender.send(AppMessage::AddImageFromPath(path));
                     }
+                });
+            }
+            AppMessage::AddImageFromPath(path) => {
+                if let Err(e) = self.add_image(&path) {
+                    eprintln!("Failed to add image: {:?}", e);
                 }
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
