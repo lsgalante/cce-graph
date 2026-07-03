@@ -423,7 +423,7 @@ impl Application for GraphApp {
                 self.uniform_background = !self.uniform_background;
                 self.graph.set_uniform_background(self.uniform_background);
                 self.menu_bar.set_item_checked(2, 1, self.uniform_background);
-                write_config_value("graph_uniform_background", &self.uniform_background.to_string());
+                write_config_value("style.surface.graph.uniform_background", &self.uniform_background.to_string());
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }
@@ -735,7 +735,7 @@ fn load_config() -> (bool, bool, bool, f32, f32) {
     
     let show_grid = val.pointer("/layout/graph_show_grid").and_then(|v| v.as_bool()).unwrap_or(true);
     let snap_enabled = val.pointer("/layout/graph_snap_enabled").and_then(|v| v.as_bool()).unwrap_or(true);
-    let uniform_background = val.pointer("/layout/graph_uniform_background").and_then(|v| v.as_bool()).unwrap_or(false);
+    let uniform_background = val.pointer("/style/surface/graph/uniform_background").and_then(|v| v.as_bool()).unwrap_or(false);
     let opacity = val.pointer("/layout/graph_network_opacity").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(0.95);
     let gap_width = val.pointer("/layout/graph_gap_width").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(35.0);
     
