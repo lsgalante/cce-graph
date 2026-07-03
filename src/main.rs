@@ -1,7 +1,7 @@
 use wayland_client::QueueHandle;
 use glyphon::{FontSystem, Buffer, Metrics, Attrs};
 use cce_ui::engine::{Application, EngineState, LogicalPosition, LogicalSize, WindowSettings};
-use cce_ui::widget::{MouseButton, ElementState, MouseScrollDelta, KeyEvent, TextItem, Element, Graph, GraphNode, MenuBar, GraphController, WidgetId, Dropdown};
+use cce_ui::widget::{MouseButton, ElementState, MouseScrollDelta, KeyEvent, TextItem, Element, Graph, GraphNode, MenuBar, GraphController, WidgetId, Dropdown, Backplate};
 use image::GenericImageView;
 
 #[derive(Debug, Clone)]
@@ -47,6 +47,7 @@ struct LoadedImage {
 }
 
 struct GraphApp {
+    root_window: Backplate,
     menu_bar: MenuBar,
     dropdown_file: Dropdown,
     dropdown_edit: Dropdown,
@@ -65,6 +66,7 @@ struct GraphApp {
     ui_context: cce_ui::context::UiContext,
     loaded_project_path: Option<std::path::PathBuf>,
     loaded_images: Vec<LoadedImage>,
+    widgets_registered: bool,
 }
 
 fn get_view_options(show_grid: bool, uniform_bg: bool, opacity: f32) -> Vec<String> {
@@ -420,7 +422,10 @@ impl Application for GraphApp {
 
         let graph_id = WidgetId(cce_ui::widget::NEXT_WIDGET_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
 
+        let root_window = Backplate::new(0.0, 0.0, 1024.0, 768.0);
+
         let mut app = Self {
+            root_window,
             menu_bar,
             dropdown_file,
             dropdown_edit,
@@ -439,8 +444,10 @@ impl Application for GraphApp {
             ui_context: cce_ui::context::UiContext::new(),
             loaded_project_path: None,
             loaded_images: Vec::new(),
+            widgets_registered: false,
         };
         
+        app.root_window.set_rect(0.0, 0.0, 1024.0, 768.0);
         app.menu_bar.set_rect(0.0, 0.0, 1024.0, 42.0);
         app.dropdown_file.set_rect(10.0, 8.0, 70.0, 26.0);
         app.dropdown_edit.set_rect(90.0, 8.0, 70.0, 26.0);
@@ -588,18 +595,25 @@ impl Application for GraphApp {
         self.ui_context.clear_popovers();
         cce_ui::widget::popovers::clear();
 
-        // Register widgets with correct, stable self addresses
-        let menu_ptr = &mut self.menu_bar as *mut MenuBar as *mut (dyn Element + 'static);
-        let file_ptr = &mut self.dropdown_file as *mut Dropdown as *mut (dyn Element + 'static);
-        let edit_ptr = &mut self.dropdown_edit as *mut Dropdown as *mut (dyn Element + 'static);
-        let view_ptr = &mut self.dropdown_view as *mut Dropdown as *mut (dyn Element + 'static);
-        let graph_ptr = &mut self.graph as *mut Graph as *mut (dyn Element + 'static);
+        if !self.widgets_registered {
+            unsafe {
+                let self_ptr = self as *mut Self;
+                
+                self.ui_context.register_widget(self.root_window.base().unwrap().id(), &mut (*self_ptr).root_window as *mut Backplate as *mut (dyn Element + 'static));
+                self.ui_context.register_widget(self.menu_bar.base.id(), &mut (*self_ptr).menu_bar as *mut MenuBar as *mut (dyn Element + 'static));
+                self.ui_context.register_widget(self.dropdown_file.base().unwrap().id(), &mut (*self_ptr).dropdown_file as *mut Dropdown as *mut (dyn Element + 'static));
+                self.ui_context.register_widget(self.dropdown_edit.base().unwrap().id(), &mut (*self_ptr).dropdown_edit as *mut Dropdown as *mut (dyn Element + 'static));
+                self.ui_context.register_widget(self.dropdown_view.base().unwrap().id(), &mut (*self_ptr).dropdown_view as *mut Dropdown as *mut (dyn Element + 'static));
+                self.ui_context.register_widget(self.graph_id, &mut (*self_ptr).graph as *mut Graph as *mut (dyn Element + 'static));
 
-        self.ui_context.register_widget(self.menu_bar.base.id(), menu_ptr);
-        self.ui_context.register_widget(self.dropdown_file.base().unwrap().id(), file_ptr);
-        self.ui_context.register_widget(self.dropdown_edit.base().unwrap().id(), edit_ptr);
-        self.ui_context.register_widget(self.dropdown_view.base().unwrap().id(), view_ptr);
-        self.ui_context.register_widget(self.graph_id, graph_ptr);
+                self.root_window.add_child(self.menu_bar.as_ptr_mut(), &mut self.ui_context);
+                self.root_window.add_child(self.dropdown_file.as_ptr_mut(), &mut self.ui_context);
+                self.root_window.add_child(self.dropdown_edit.as_ptr_mut(), &mut self.ui_context);
+                self.root_window.add_child(self.dropdown_view.as_ptr_mut(), &mut self.ui_context);
+                self.root_window.add_child(self.graph.as_ptr_mut(), &mut self.ui_context);
+            }
+            self.widgets_registered = true;
+        }
 
         if self.dropdown_file.popover_rect().is_some() {
             self.ui_context.register_popover(&self.dropdown_file);
@@ -620,6 +634,8 @@ impl Application for GraphApp {
             self.height = size.height as u32;
             self.scale_factor = scale;
             
+            self.root_window.set_rect(0.0, 0.0, size.width, size.height);
+            
             // Layout MenuBar at the top
             self.menu_bar.set_rect(0.0, 0.0, size.width, 42.0);
             
@@ -637,17 +653,15 @@ impl Application for GraphApp {
             self.ui_context.rebuild_spatial_grid();
         }
 
-        // 1. Background quad (outer window color)
-        quads.push((0.0, 0.0, self.width as f32, self.height as f32, [0.08, 0.08, 0.10, 1.0]));
+        // 1. Root window / child quads collected recursively (includes MenuBar background when flat, Graph extra quads, etc.)
+        quads.extend(self.root_window.all_quads(&self.ui_context));
 
-        // 2. Add Graph extra quads (includes graph background color if uniform background is active)
+        // 2. Add Graph background color manually if uniform background is active (Graph uses default all_quads which doesn't push it)
         let graph_color = self.graph.color();
         if graph_color[3] > 0.0 {
             let (gx, gy, gw, gh) = self.graph.rect();
             quads.push((gx, gy, gw, gh, graph_color));
         }
-
-        quads.extend(self.graph.extra_quads());
 
         // Draw foreground images in the graph grid (above nodes, fully opaque, preserving aspect ratio)
         let (grid_origin_x, grid_origin_y) = self.graph.grid_origin();
@@ -705,22 +719,10 @@ impl Application for GraphApp {
                 }
             }
         }
-
-        // 3. Add MenuBar background and highlights/dropdowns
-        let mb_color = self.menu_bar.color();
-        let (mb_x, mb_y, mb_w, mb_h) = self.menu_bar.rect();
-        quads.push((mb_x, mb_y, mb_w, mb_h, mb_color));
-
-        // Add Dropdown flat trigger backgrounds (when rounded corners are not active)
-        quads.extend(self.dropdown_file.extra_quads());
-        quads.extend(self.dropdown_edit.extra_quads());
-        quads.extend(self.dropdown_view.extra_quads());
     }
 
     fn view_rounded_quads(&mut self, quads: &mut Vec<(f32, f32, f32, f32, f32, [f32; 4], (bool, bool, bool, bool))>, _size: LogicalSize, _scale: f64) {
-        quads.extend(self.dropdown_file.all_rounded_quads(&self.ui_context));
-        quads.extend(self.dropdown_edit.all_rounded_quads(&self.ui_context));
-        quads.extend(self.dropdown_view.all_rounded_quads(&self.ui_context));
+        quads.extend(self.root_window.all_rounded_quads(&self.ui_context));
     }
 
     fn text_items(&self) -> &[TextItem] {
