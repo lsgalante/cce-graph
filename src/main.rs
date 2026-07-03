@@ -239,25 +239,11 @@ impl GraphApp {
     }
 
     fn load_recent_files(&self) -> Vec<String> {
-        let path = std::path::Path::new("/home/lsgalante/.config/cce/recent_graphs.json");
-        if path.exists() {
-            if let Ok(content) = std::fs::read_to_string(path) {
-                if let Ok(list) = serde_json::from_str::<Vec<String>>(&content) {
-                    return list.into_iter().filter(|p| std::path::Path::new(p).exists()).collect();
-                }
-            }
-        }
-        Vec::new()
+        cce_ui::config::load_recent_files()
     }
 
     fn save_recent_files(&self, files: &[String]) {
-        let path = std::path::Path::new("/home/lsgalante/.config/cce/recent_graphs.json");
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Ok(content) = serde_json::to_string(files) {
-            let _ = std::fs::write(path, content);
-        }
+        cce_ui::config::save_recent_files(files)
     }
 
     fn add_recent_file(&mut self, file_path: &std::path::Path) {
@@ -445,15 +431,7 @@ impl Application for GraphApp {
         let menu_bar = MenuBar::new(0.0, 0.0, 1024.0, 42.0)
             .with_color([0.08, 0.08, 0.12, 1.0]);
 
-        let mut recent = Vec::new();
-        let recent_path = std::path::Path::new("/home/lsgalante/.config/cce/recent_graphs.json");
-        if recent_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(recent_path) {
-                if let Ok(list) = serde_json::from_str::<Vec<String>>(&content) {
-                    recent = list.into_iter().filter(|p| std::path::Path::new(p).exists()).collect();
-                }
-            }
-        }
+        let recent = cce_ui::config::load_recent_files();
 
         let mut file_options = vec![
             "New".to_string(),
