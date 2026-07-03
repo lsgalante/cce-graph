@@ -8,6 +8,7 @@ use image::GenericImageView;
 enum AppMessage {
     New,
     Open,
+    OpenRecent(std::path::PathBuf),
     Save,
     SaveAs,
     Exit,
@@ -237,6 +238,60 @@ impl GraphApp {
         Ok(())
     }
 
+    fn load_recent_files(&self) -> Vec<String> {
+        let path = std::path::Path::new("/home/lsgalante/.config/cce/recent_graphs.json");
+        if path.exists() {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                if let Ok(list) = serde_json::from_str::<Vec<String>>(&content) {
+                    return list.into_iter().filter(|p| std::path::Path::new(p).exists()).collect();
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    fn save_recent_files(&self, files: &[String]) {
+        let path = std::path::Path::new("/home/lsgalante/.config/cce/recent_graphs.json");
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(content) = serde_json::to_string(files) {
+            let _ = std::fs::write(path, content);
+        }
+    }
+
+    fn add_recent_file(&mut self, file_path: &std::path::Path) {
+        if let Ok(abs_path) = std::fs::canonicalize(file_path) {
+            let abs_str = abs_path.to_string_lossy().to_string();
+            let mut recent = self.load_recent_files();
+            recent.retain(|p| p != &abs_str);
+            recent.insert(0, abs_str);
+            if recent.len() > 10 {
+                recent.truncate(10);
+            }
+            self.save_recent_files(&recent);
+            self.update_recent_files_dropdown(recent);
+        }
+    }
+
+    fn update_recent_files_dropdown(&mut self, recent: Vec<String>) {
+        let mut options = vec![
+            "New".to_string(),
+            "Open...".to_string(),
+            "Save".to_string(),
+            "Save As".to_string(),
+        ];
+        if !recent.is_empty() {
+            options.push("-".to_string());
+            options.extend(recent);
+        }
+        options.push("-".to_string());
+        options.push("Exit".to_string());
+        self.dropdown_file.options = options;
+        self.dropdown_file.selected = 999;
+        self.needs_rebuild = true;
+    }
+
     fn load_project_from_path(&mut self, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
         let (state_file_path, project_dir) = if path.is_dir() {
             (path.join("state.json"), path.to_path_buf())
@@ -390,17 +445,31 @@ impl Application for GraphApp {
         let menu_bar = MenuBar::new(0.0, 0.0, 1024.0, 42.0)
             .with_color([0.08, 0.08, 0.12, 1.0]);
 
-        let dropdown_file = Dropdown::new(
-            vec![
-                "New".to_string(),
-                "Open".to_string(),
-                "Save".to_string(),
-                "Save As".to_string(),
-                "Exit".to_string(),
-            ],
-            999,
-        )
-        .with_custom_display_text("File");
+        let mut recent = Vec::new();
+        let recent_path = std::path::Path::new("/home/lsgalante/.config/cce/recent_graphs.json");
+        if recent_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(recent_path) {
+                if let Ok(list) = serde_json::from_str::<Vec<String>>(&content) {
+                    recent = list.into_iter().filter(|p| std::path::Path::new(p).exists()).collect();
+                }
+            }
+        }
+
+        let mut file_options = vec![
+            "New".to_string(),
+            "Open...".to_string(),
+            "Save".to_string(),
+            "Save As".to_string(),
+        ];
+        if !recent.is_empty() {
+            file_options.push("-".to_string());
+            file_options.extend(recent);
+        }
+        file_options.push("-".to_string());
+        file_options.push("Exit".to_string());
+
+        let dropdown_file = Dropdown::new(file_options, 999)
+            .with_custom_display_text("File");
 
         let dropdown_edit = Dropdown::new(
             vec![
@@ -483,7 +552,18 @@ impl Application for GraphApp {
                 if let Some(path) = cce_ui::file_dialog::pick_file("Open CCE Graph Project", &[]) {
                     if let Err(e) = self.load_project_from_path(&path) {
                         eprintln!("Failed to load project: {:?}", e);
+                    } else {
+                        self.add_recent_file(&path);
                     }
+                }
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            }
+            AppMessage::OpenRecent(path) => {
+                if let Err(e) = self.load_project_from_path(&path) {
+                    eprintln!("Failed to load project: {:?}", e);
+                } else {
+                    self.add_recent_file(&path);
                 }
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
@@ -492,11 +572,15 @@ impl Application for GraphApp {
                 if let Some(path) = self.loaded_project_path.clone() {
                     if let Err(e) = self.save_project_to_path(&path) {
                         eprintln!("Failed to save project: {:?}", e);
+                    } else {
+                        self.add_recent_file(&path);
                     }
                 } else {
                     if let Some(path) = cce_ui::file_dialog::save_file("Save CCE Graph Project", &[]) {
                         if let Err(e) = self.save_project_to_path(&path) {
                             eprintln!("Failed to save project: {:?}", e);
+                        } else {
+                            self.add_recent_file(&path);
                         }
                     }
                 }
@@ -507,6 +591,8 @@ impl Application for GraphApp {
                 if let Some(path) = cce_ui::file_dialog::save_file("Save CCE Graph Project As", &[]) {
                     if let Err(e) = self.save_project_to_path(&path) {
                         eprintln!("Failed to save project: {:?}", e);
+                    } else {
+                        self.add_recent_file(&path);
                     }
                 }
                 *needs_rebuild = true;
@@ -775,14 +861,21 @@ impl Application for GraphApp {
             if self.dropdown_file.mouse_input(button, state, pos.x, pos.y, &mut self.ui_context) {
                 changed = true;
                 if self.dropdown_file.take_change() {
-                    let idx = self.dropdown_file.selected;
-                    match idx {
-                        0 => msg_out = Some(AppMessage::New),
-                        1 => msg_out = Some(AppMessage::Open),
-                        2 => msg_out = Some(AppMessage::Save),
-                        3 => msg_out = Some(AppMessage::SaveAs),
-                        4 => msg_out = Some(AppMessage::Exit),
-                        _ => {}
+                    let selected_idx = self.dropdown_file.selected;
+                    if selected_idx < self.dropdown_file.options.len() {
+                        let option_text = &self.dropdown_file.options[selected_idx];
+                        match option_text.as_str() {
+                            "New" => msg_out = Some(AppMessage::New),
+                            "Open" | "Open..." => msg_out = Some(AppMessage::Open),
+                            "Save" => msg_out = Some(AppMessage::Save),
+                            "Save As" => msg_out = Some(AppMessage::SaveAs),
+                            "Exit" => msg_out = Some(AppMessage::Exit),
+                            "-" => {}
+                            _ => {
+                                let path = std::path::PathBuf::from(option_text);
+                                msg_out = Some(AppMessage::OpenRecent(path));
+                            }
+                        }
                     }
                     self.dropdown_file.selected = 999;
                 }
