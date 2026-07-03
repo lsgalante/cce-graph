@@ -148,28 +148,25 @@ impl GraphApp {
 
     fn rebuild_text_items(&mut self) {
         self.text_items.clear();
-        
-        // 1. Collect labels from Graph widget
-        let mut labels = self.graph.text_labels_with_bounds(&self.ui_context);
-        
-        // 2. Collect labels from MenuBar widget
-        labels.extend(self.menu_bar.text_labels_with_bounds(&self.ui_context));
-        
         let scale = cce_ui::scale::scale_factor();
-        for (label, bounds) in labels {
-            let physical_size = label.font_size * scale;
-            let metrics = Metrics::new(physical_size, physical_size * 1.4);
-            let mut buf = Buffer::new(&mut self.font_system, metrics);
-            buf.set_text(&mut self.font_system, &label.text, Attrs::new(), glyphon::Shaping::Advanced);
-            buf.shape_until_scroll(&mut self.font_system, true);
-            self.text_items.push(TextItem {
-                buffer: buf,
-                x: label.x,
-                y: label.y,
-                color: glyphon::Color::rgb(label.color[0], label.color[1], label.color[2]),
-                bounds,
-            });
-        }
+        
+        // 1. Add Graph labels using our font-aware helper
+        Self::add_element_labels(
+            &self.graph,
+            &self.ui_context,
+            &mut self.font_system,
+            &mut self.text_items,
+            scale,
+        );
+        
+        // 2. Add MenuBar labels using our font-aware helper
+        Self::add_element_labels(
+            &self.menu_bar,
+            &self.ui_context,
+            &mut self.font_system,
+            &mut self.text_items,
+            scale,
+        );
 
         // 3. Add Dropdown labels using our font-aware helper
         Self::add_element_labels(
