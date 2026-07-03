@@ -99,6 +99,51 @@ impl GraphApp {
         self.dropdown_view.options = get_view_options(self.show_grid, self.uniform_background, self.opacity);
     }
 
+    fn add_element_labels(
+        element: &dyn Element,
+        ui_context: &cce_ui::context::UiContext,
+        font_system: &mut FontSystem,
+        text_items: &mut Vec<TextItem>,
+        scale: f32,
+    ) {
+        for (label, font_family, bounds) in element.text_labels_with_font_and_bounds(ui_context) {
+            let mut font_size = label.font_size;
+            let mut family_name = None;
+            if let Some(ref font_str) = font_family {
+                let (parsed_family, parsed_size) = cce_ui::layout::parse_font_string(font_str);
+                if let Some(ps) = parsed_size {
+                    font_size = ps;
+                }
+                family_name = Some(parsed_family);
+            }
+
+            let physical_size = font_size * scale;
+            let metrics = Metrics::new(physical_size, physical_size * 1.4);
+            let mut buf = Buffer::new(font_system, metrics);
+            let mut attrs = Attrs::new();
+            
+            let family_str = family_name.clone();
+            if let Some(ref family) = family_str {
+                let family_val = match family.as_str() {
+                    "monospace" => glyphon::Family::Name(cce_ui::layout::get_system_monospace_font()),
+                    "sans-serif" => glyphon::Family::SansSerif,
+                    "serif" => glyphon::Family::Serif,
+                    _ => glyphon::Family::Name(family),
+                };
+                attrs = attrs.family(family_val);
+            }
+            buf.set_text(font_system, &label.text, attrs, glyphon::Shaping::Advanced);
+            buf.shape_until_scroll(font_system, true);
+            text_items.push(TextItem {
+                buffer: buf,
+                x: label.x,
+                y: label.y,
+                color: glyphon::Color::rgb(label.color[0], label.color[1], label.color[2]),
+                bounds,
+            });
+        }
+    }
+
     fn rebuild_text_items(&mut self) {
         self.text_items.clear();
         
@@ -107,11 +152,6 @@ impl GraphApp {
         
         // 2. Collect labels from MenuBar widget
         labels.extend(self.menu_bar.text_labels_with_bounds(&self.ui_context));
-        
-        // 3. Collect labels from Dropdown widgets
-        labels.extend(self.dropdown_file.text_labels_with_bounds(&self.ui_context));
-        labels.extend(self.dropdown_edit.text_labels_with_bounds(&self.ui_context));
-        labels.extend(self.dropdown_view.text_labels_with_bounds(&self.ui_context));
         
         let scale = cce_ui::scale::scale_factor();
         for (label, bounds) in labels {
@@ -128,6 +168,29 @@ impl GraphApp {
                 bounds,
             });
         }
+
+        // 3. Add Dropdown labels using our font-aware helper
+        Self::add_element_labels(
+            &self.dropdown_file,
+            &self.ui_context,
+            &mut self.font_system,
+            &mut self.text_items,
+            scale,
+        );
+        Self::add_element_labels(
+            &self.dropdown_edit,
+            &self.ui_context,
+            &mut self.font_system,
+            &mut self.text_items,
+            scale,
+        );
+        Self::add_element_labels(
+            &self.dropdown_view,
+            &self.ui_context,
+            &mut self.font_system,
+            &mut self.text_items,
+            scale,
+        );
     }
 
     fn new_project(&mut self) {
@@ -365,7 +428,7 @@ impl Application for GraphApp {
             graph,
             graph_id,
             text_items: Vec::new(),
-            font_system: FontSystem::new(),
+            font_system: cce_ui::create_font_system(),
             needs_rebuild: true,
             width: 1024,
             height: 768,
