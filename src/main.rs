@@ -1,7 +1,7 @@
 use wayland_client::QueueHandle;
 use glyphon::{FontSystem, Buffer, Metrics, Attrs};
 use cce_ui::engine::{Application, EngineState, LogicalPosition, LogicalSize, WindowSettings};
-use cce_ui::widget::{MouseButton, ElementState, MouseScrollDelta, KeyEvent, TextItem, Element, Graph, GraphNode, MenuBar, MenuController, GraphController, WidgetId};
+use cce_ui::widget::{MouseButton, ElementState, MouseScrollDelta, KeyEvent, TextItem, Element, Graph, GraphNode, MenuBar, GraphController, WidgetId, Dropdown};
 use image::GenericImageView;
 
 #[derive(Debug, Clone)]
@@ -48,6 +48,9 @@ struct LoadedImage {
 
 struct GraphApp {
     menu_bar: MenuBar,
+    dropdown_file: Dropdown,
+    dropdown_edit: Dropdown,
+    dropdown_view: Dropdown,
     graph: Graph,
     graph_id: WidgetId,
     text_items: Vec<TextItem>,
@@ -62,6 +65,16 @@ struct GraphApp {
     ui_context: cce_ui::context::UiContext,
     loaded_project_path: Option<std::path::PathBuf>,
     loaded_images: Vec<LoadedImage>,
+}
+
+fn get_view_options(show_grid: bool, uniform_bg: bool, opacity: f32) -> Vec<String> {
+    vec![
+        format!("{} Show Grid", if show_grid { "✓" } else { "  " }),
+        format!("{} Uniform Background", if uniform_bg { "✓" } else { "  " }),
+        format!("{} Opacity: 95%", if (opacity - 0.95).abs() < 0.05 { "✓" } else { "  " }),
+        format!("{} Opacity: 75%", if (opacity - 0.75).abs() < 0.05 { "✓" } else { "  " }),
+        format!("{} Opacity: 50%", if (opacity - 0.50).abs() < 0.05 { "✓" } else { "  " }),
+    ]
 }
 
 fn load_image_pixels(path: &std::path::Path) -> Option<(Vec<[u8; 4]>, u32, u32)> {
@@ -82,6 +95,10 @@ fn load_image_pixels(path: &std::path::Path) -> Option<(Vec<[u8; 4]>, u32, u32)>
 }
 
 impl GraphApp {
+    fn update_view_options(&mut self) {
+        self.dropdown_view.options = get_view_options(self.show_grid, self.uniform_background, self.opacity);
+    }
+
     fn rebuild_text_items(&mut self) {
         self.text_items.clear();
         
@@ -90,6 +107,11 @@ impl GraphApp {
         
         // 2. Collect labels from MenuBar widget
         labels.extend(self.menu_bar.text_labels_with_bounds(&self.ui_context));
+        
+        // 3. Collect labels from Dropdown widgets
+        labels.extend(self.dropdown_file.text_labels_with_bounds(&self.ui_context));
+        labels.extend(self.dropdown_edit.text_labels_with_bounds(&self.ui_context));
+        labels.extend(self.dropdown_view.text_labels_with_bounds(&self.ui_context));
         
         let scale = cce_ui::scale::scale_factor();
         for (label, bounds) in labels {
@@ -200,12 +222,8 @@ impl GraphApp {
         self.graph.set_uniform_background(self.uniform_background);
         self.graph.set_network_opacity(self.opacity);
 
-        // Update menu bar checkboxes
-        self.menu_bar.set_item_checked(2, 0, self.show_grid);
-        self.menu_bar.set_item_checked(2, 1, self.uniform_background);
-        self.menu_bar.set_item_checked(2, 2, (self.opacity - 0.95).abs() < 0.05);
-        self.menu_bar.set_item_checked(2, 3, (self.opacity - 0.75).abs() < 0.05);
-        self.menu_bar.set_item_checked(2, 4, (self.opacity - 0.50).abs() < 0.05);
+        // Update view dropdown options
+        self.update_view_options();
 
         self.loaded_project_path = Some(project_dir);
         self.needs_rebuild = true;
@@ -306,29 +324,44 @@ impl Application for GraphApp {
         graph.set_network_opacity(opacity);
 
         // Build Menu Bar with options to toggle new features
-        let mut menu_bar = MenuBar::new(0.0, 0.0, 1024.0, 42.0)
-            .with_color([0.08, 0.08, 0.12, 1.0])
-            .with_title("cce-graph")
-            .with_item("File", &["New", "Open", "Save", "Save As", "Exit"])
-            .with_item("Edit", &["Add Node", "Add Image"])
-            .with_item("View", &[
-                "Show Grid",
-                "Uniform Background",
-                "Opacity: 95%",
-                "Opacity: 75%",
-                "Opacity: 50%"
-            ]);
-            
-        menu_bar.set_item_checked(2, 0, show_grid);  // Show Grid checked
-        menu_bar.set_item_checked(2, 1, uniform_background); // Uniform Background unchecked
-        menu_bar.set_item_checked(2, 2, (opacity - 0.95).abs() < 0.05);  // Opacity 95% checked
-        menu_bar.set_item_checked(2, 3, (opacity - 0.75).abs() < 0.05);  // Opacity 75% checked
-        menu_bar.set_item_checked(2, 4, (opacity - 0.50).abs() < 0.05);  // Opacity 50% checked
+        // Build Menu Bar background
+        let menu_bar = MenuBar::new(0.0, 0.0, 1024.0, 42.0)
+            .with_color([0.08, 0.08, 0.12, 1.0]);
+
+        let dropdown_file = Dropdown::new(
+            vec![
+                "New".to_string(),
+                "Open".to_string(),
+                "Save".to_string(),
+                "Save As".to_string(),
+                "Exit".to_string(),
+            ],
+            999,
+        )
+        .with_custom_display_text("File");
+
+        let dropdown_edit = Dropdown::new(
+            vec![
+                "Add Node".to_string(),
+                "Add Image".to_string(),
+            ],
+            999,
+        )
+        .with_custom_display_text("Edit");
+
+        let dropdown_view = Dropdown::new(
+            get_view_options(show_grid, uniform_background, opacity),
+            999,
+        )
+        .with_custom_display_text("View");
 
         let graph_id = WidgetId(cce_ui::widget::NEXT_WIDGET_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
 
         let mut app = Self {
             menu_bar,
+            dropdown_file,
+            dropdown_edit,
+            dropdown_view,
             graph,
             graph_id,
             text_items: Vec::new(),
@@ -346,6 +379,9 @@ impl Application for GraphApp {
         };
         
         app.menu_bar.set_rect(0.0, 0.0, 1024.0, 42.0);
+        app.dropdown_file.set_rect(10.0, 8.0, 70.0, 26.0);
+        app.dropdown_edit.set_rect(90.0, 8.0, 70.0, 26.0);
+        app.dropdown_view.set_rect(170.0, 8.0, 70.0, 26.0);
         app.graph.set_rect(0.0, 42.0, 1024.0, 768.0 - 42.0);
         app.rebuild_text_items();
         app
@@ -415,7 +451,7 @@ impl Application for GraphApp {
             AppMessage::ToggleGrid => {
                 self.show_grid = !self.show_grid;
                 self.graph.set_show_network_grid(self.show_grid);
-                self.menu_bar.set_item_checked(2, 0, self.show_grid);
+                self.update_view_options();
                 write_config_value("graph_show_grid", &self.show_grid.to_string());
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
@@ -423,7 +459,7 @@ impl Application for GraphApp {
             AppMessage::ToggleUniformBackground => {
                 self.uniform_background = !self.uniform_background;
                 self.graph.set_uniform_background(self.uniform_background);
-                self.menu_bar.set_item_checked(2, 1, self.uniform_background);
+                self.update_view_options();
                 write_config_value("style.surface.graph.uniform_background", &self.uniform_background.to_string());
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
@@ -431,9 +467,7 @@ impl Application for GraphApp {
             AppMessage::SetOpacity95 => {
                 self.opacity = 0.95;
                 self.graph.set_network_opacity(0.95);
-                self.menu_bar.set_item_checked(2, 2, true);
-                self.menu_bar.set_item_checked(2, 3, false);
-                self.menu_bar.set_item_checked(2, 4, false);
+                self.update_view_options();
                 write_config_value("graph_network_opacity", "0.95");
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
@@ -441,9 +475,7 @@ impl Application for GraphApp {
             AppMessage::SetOpacity75 => {
                 self.opacity = 0.75;
                 self.graph.set_network_opacity(0.75);
-                self.menu_bar.set_item_checked(2, 2, false);
-                self.menu_bar.set_item_checked(2, 3, true);
-                self.menu_bar.set_item_checked(2, 4, false);
+                self.update_view_options();
                 write_config_value("graph_network_opacity", "0.75");
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
@@ -451,9 +483,7 @@ impl Application for GraphApp {
             AppMessage::SetOpacity50 => {
                 self.opacity = 0.50;
                 self.graph.set_network_opacity(0.50);
-                self.menu_bar.set_item_checked(2, 2, false);
-                self.menu_bar.set_item_checked(2, 3, false);
-                self.menu_bar.set_item_checked(2, 4, true);
+                self.update_view_options();
                 write_config_value("graph_network_opacity", "0.50");
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
@@ -497,13 +527,28 @@ impl Application for GraphApp {
 
         // Register widgets with correct, stable self addresses
         let menu_ptr = &mut self.menu_bar as *mut MenuBar as *mut (dyn Element + 'static);
+        let file_ptr = &mut self.dropdown_file as *mut Dropdown as *mut (dyn Element + 'static);
+        let edit_ptr = &mut self.dropdown_edit as *mut Dropdown as *mut (dyn Element + 'static);
+        let view_ptr = &mut self.dropdown_view as *mut Dropdown as *mut (dyn Element + 'static);
         let graph_ptr = &mut self.graph as *mut Graph as *mut (dyn Element + 'static);
+
         self.ui_context.register_widget(self.menu_bar.base.id(), menu_ptr);
+        self.ui_context.register_widget(self.dropdown_file.base().unwrap().id(), file_ptr);
+        self.ui_context.register_widget(self.dropdown_edit.base().unwrap().id(), edit_ptr);
+        self.ui_context.register_widget(self.dropdown_view.base().unwrap().id(), view_ptr);
         self.ui_context.register_widget(self.graph_id, graph_ptr);
 
-        if self.menu_bar.popover_rect().is_some() {
-            self.ui_context.register_popover(&self.menu_bar);
-            cce_ui::widget::popovers::register(&self.menu_bar);
+        if self.dropdown_file.popover_rect().is_some() {
+            self.ui_context.register_popover(&self.dropdown_file);
+            cce_ui::widget::popovers::register(&self.dropdown_file);
+        }
+        if self.dropdown_edit.popover_rect().is_some() {
+            self.ui_context.register_popover(&self.dropdown_edit);
+            cce_ui::widget::popovers::register(&self.dropdown_edit);
+        }
+        if self.dropdown_view.popover_rect().is_some() {
+            self.ui_context.register_popover(&self.dropdown_view);
+            cce_ui::widget::popovers::register(&self.dropdown_view);
         }
 
         let size_changed = self.width != size.width as u32 || self.height != size.height as u32 || self.scale_factor != scale;
@@ -514,6 +559,11 @@ impl Application for GraphApp {
             
             // Layout MenuBar at the top
             self.menu_bar.set_rect(0.0, 0.0, size.width, 42.0);
+            
+            // Layout Dropdowns on MenuBar
+            self.dropdown_file.set_rect(10.0, 8.0, 70.0, 26.0);
+            self.dropdown_edit.set_rect(90.0, 8.0, 70.0, 26.0);
+            self.dropdown_view.set_rect(170.0, 8.0, 70.0, 26.0);
             
             // Layout Graph below MenuBar
             self.graph.set_rect(0.0, 42.0, size.width, size.height - 42.0);
@@ -598,10 +648,16 @@ impl Application for GraphApp {
         let (mb_x, mb_y, mb_w, mb_h) = self.menu_bar.rect();
         quads.push((mb_x, mb_y, mb_w, mb_h, mb_color));
 
+        // Add Dropdown flat trigger backgrounds (when rounded corners are not active)
+        quads.extend(self.dropdown_file.extra_quads());
+        quads.extend(self.dropdown_edit.extra_quads());
+        quads.extend(self.dropdown_view.extra_quads());
+    }
 
-
-        // Add MenuBar extra quads (dropdown boxes)
-        quads.extend(self.menu_bar.extra_quads());
+    fn view_rounded_quads(&mut self, quads: &mut Vec<(f32, f32, f32, f32, f32, [f32; 4], (bool, bool, bool, bool))>, _size: LogicalSize, _scale: f64) {
+        quads.extend(self.dropdown_file.all_rounded_quads(&self.ui_context));
+        quads.extend(self.dropdown_edit.all_rounded_quads(&self.ui_context));
+        quads.extend(self.dropdown_view.all_rounded_quads(&self.ui_context));
     }
 
     fn text_items(&self) -> &[TextItem] {
@@ -615,11 +671,16 @@ impl Application for GraphApp {
     fn handle_pointer_move(&mut self, pos: LogicalPosition, needs_rebuild: &mut bool) {
         let mut changed = false;
 
-        // If MenuBar has an open menu, or cursor is over MenuBar, feed it first
-        if self.menu_bar.is_menu_open() || self.menu_bar.hit_test(pos.x, pos.y, &self.ui_context) {
-            if self.menu_bar.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) {
-                changed = true;
-            }
+        let over_menu = self.dropdown_file.open || self.dropdown_edit.open || self.dropdown_view.open
+            || self.dropdown_file.hit_test(pos.x, pos.y, &self.ui_context)
+            || self.dropdown_edit.hit_test(pos.x, pos.y, &self.ui_context)
+            || self.dropdown_view.hit_test(pos.x, pos.y, &self.ui_context)
+            || self.menu_bar.hit_test(pos.x, pos.y, &self.ui_context);
+
+        if over_menu {
+            if self.dropdown_file.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) { changed = true; }
+            if self.dropdown_edit.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) { changed = true; }
+            if self.dropdown_view.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) { changed = true; }
         } else {
             // Otherwise feed it to Graph
             if self.graph.is_dragging() {
@@ -631,10 +692,10 @@ impl Application for GraphApp {
                     changed = true;
                 }
             }
-            // Clear menu bar hover if cursor moved away
-            if self.menu_bar.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) {
-                changed = true;
-            }
+            // Clear hover states if cursor moved away
+            if self.dropdown_file.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) { changed = true; }
+            if self.dropdown_edit.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) { changed = true; }
+            if self.dropdown_view.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) { changed = true; }
         }
 
         if changed {
@@ -647,44 +708,66 @@ impl Application for GraphApp {
         let mut changed = false;
         let mut msg_out = None;
 
-        if self.menu_bar.is_menu_open() || self.menu_bar.hit_test(pos.x, pos.y, &self.ui_context) {
-            if self.menu_bar.mouse_input(button, state, pos.x, pos.y, &mut self.ui_context) {
+        let over_menu = self.dropdown_file.open || self.dropdown_edit.open || self.dropdown_view.open
+            || self.dropdown_file.hit_test(pos.x, pos.y, &self.ui_context)
+            || self.dropdown_edit.hit_test(pos.x, pos.y, &self.ui_context)
+            || self.dropdown_view.hit_test(pos.x, pos.y, &self.ui_context)
+            || self.menu_bar.hit_test(pos.x, pos.y, &self.ui_context);
+
+        if over_menu {
+            if self.dropdown_file.mouse_input(button, state, pos.x, pos.y, &mut self.ui_context) {
                 changed = true;
-                
-                // Check if a dropdown menu item was clicked
-                if let Some((menu_idx, item_idx)) = self.menu_bar.menu_click() {
-                    if menu_idx == 0 { // File
-                        match item_idx {
-                            0 => msg_out = Some(AppMessage::New),
-                            1 => msg_out = Some(AppMessage::Open),
-                            2 => msg_out = Some(AppMessage::Save),
-                            3 => msg_out = Some(AppMessage::SaveAs),
-                            4 => msg_out = Some(AppMessage::Exit),
-                            _ => {}
-                        }
-                    } else if menu_idx == 1 { // Edit
-                        match item_idx {
-                            0 => msg_out = Some(AppMessage::AddNode),
-                            1 => msg_out = Some(AppMessage::AddImage),
-                            _ => {}
-                        }
-                    } else if menu_idx == 2 { // View
-                        match item_idx {
-                            0 => msg_out = Some(AppMessage::ToggleGrid),
-                            1 => msg_out = Some(AppMessage::ToggleUniformBackground),
-                            2 => msg_out = Some(AppMessage::SetOpacity95),
-                            3 => msg_out = Some(AppMessage::SetOpacity75),
-                            4 => msg_out = Some(AppMessage::SetOpacity50),
-                            _ => {}
-                        }
+                if self.dropdown_file.take_change() {
+                    let idx = self.dropdown_file.selected;
+                    match idx {
+                        0 => msg_out = Some(AppMessage::New),
+                        1 => msg_out = Some(AppMessage::Open),
+                        2 => msg_out = Some(AppMessage::Save),
+                        3 => msg_out = Some(AppMessage::SaveAs),
+                        4 => msg_out = Some(AppMessage::Exit),
+                        _ => {}
                     }
+                    self.dropdown_file.selected = 999;
                 }
             }
-            
-            // If the user clicked outside the open menu, close it
-            if state == ElementState::Pressed && !self.menu_bar.hit_test(pos.x, pos.y, &self.ui_context) {
-                self.menu_bar.unfocus();
+            if self.dropdown_edit.mouse_input(button, state, pos.x, pos.y, &mut self.ui_context) {
                 changed = true;
+                if self.dropdown_edit.take_change() {
+                    let idx = self.dropdown_edit.selected;
+                    match idx {
+                        0 => msg_out = Some(AppMessage::AddNode),
+                        1 => msg_out = Some(AppMessage::AddImage),
+                        _ => {}
+                    }
+                    self.dropdown_edit.selected = 999;
+                }
+            }
+            if self.dropdown_view.mouse_input(button, state, pos.x, pos.y, &mut self.ui_context) {
+                changed = true;
+                if self.dropdown_view.take_change() {
+                    let idx = self.dropdown_view.selected;
+                    match idx {
+                        0 => msg_out = Some(AppMessage::ToggleGrid),
+                        1 => msg_out = Some(AppMessage::ToggleUniformBackground),
+                        2 => msg_out = Some(AppMessage::SetOpacity95),
+                        3 => msg_out = Some(AppMessage::SetOpacity75),
+                        4 => msg_out = Some(AppMessage::SetOpacity50),
+                        _ => {}
+                    }
+                    self.dropdown_view.selected = 999;
+                }
+            }
+
+            if state == ElementState::Pressed {
+                if !self.dropdown_file.hit_test(pos.x, pos.y, &self.ui_context) {
+                    self.dropdown_file.open = false;
+                }
+                if !self.dropdown_edit.hit_test(pos.x, pos.y, &self.ui_context) {
+                    self.dropdown_edit.open = false;
+                }
+                if !self.dropdown_view.hit_test(pos.x, pos.y, &self.ui_context) {
+                    self.dropdown_view.open = false;
+                }
             }
         } else {
             // Otherwise route to Graph
