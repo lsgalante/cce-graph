@@ -501,6 +501,19 @@ impl Application for GraphApp {
         app.dropdown_edit.set_rect(90.0, 8.0, 70.0, 26.0);
         app.dropdown_view.set_rect(170.0, 8.0, 70.0, 26.0);
         app.graph.set_rect(0.0, 42.0, 1024.0, 768.0 - 42.0);
+
+        let args: Vec<String> = std::env::args().collect();
+        if args.len() > 1 {
+            let path = std::path::PathBuf::from(&args[1]);
+            if path.exists() {
+                if let Err(e) = app.load_project_from_path(&path) {
+                    eprintln!("Failed to load project on startup: {:?}", e);
+                } else {
+                    app.add_recent_file(&path);
+                }
+            }
+        }
+
         app.rebuild_text_items();
         app
     }
