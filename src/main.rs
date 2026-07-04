@@ -878,8 +878,6 @@ impl Application for GraphApp {
         let root_window = Backplate::new(0.0, 0.0, 1024.0, 768.0);
 
         let mut control_panel = Plate::new(800.0, 50.0, 210.0, 160.0)
-            .with_color([0.15, 0.15, 0.2, 0.95])
-            .with_solid_border([0.3, 0.3, 0.4, 1.0], 1.0)
             .with_draggable(true);
         let show_control_panel = false;
         control_panel.visible = show_control_panel;
