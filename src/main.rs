@@ -348,6 +348,39 @@ fn load_project_from_kdl_path(path: &std::path::Path) -> Result<GraphProjectStat
     })
 }
 
+fn save_project_to_kdl_path(path: &std::path::Path, state: &GraphProjectState) -> Result<(), Box<dyn std::error::Error>> {
+    let mut kdl = String::new();
+    kdl.push_str(&format!("name {:?}\n", state.name));
+    kdl.push_str(&format!("show_grid {}\n", state.show_grid));
+    kdl.push_str(&format!("uniform_background {}\n", state.uniform_background));
+    kdl.push_str(&format!("opacity {}\n\n", state.opacity));
+
+    for node in &state.nodes {
+        kdl.push_str(&format!("node {:?} {{\n", node.name));
+        kdl.push_str(&format!("    position {} {}\n", node.position.0, node.position.1));
+        kdl.push_str(&format!("    inputs {}\n", node.inputs));
+        kdl.push_str(&format!("    outputs {}\n", node.outputs));
+        kdl.push_str(&format!("    geom_visible {}\n", node.geom_visible));
+        if !node.node_type.is_empty() {
+            kdl.push_str(&format!("    node_type {:?}\n", node.node_type));
+        }
+        for (p_name, p_val, p_type) in &node.parameters {
+            kdl.push_str(&format!("    parameter {:?} value={:?} type={:?}\n", p_name, p_val, p_type));
+        }
+        kdl.push_str("}\n\n");
+    }
+
+    for img in &state.images {
+        kdl.push_str(&format!("image {:?} {{\n", img.path));
+        kdl.push_str(&format!("    position {} {}\n", img.position.0, img.position.1));
+        kdl.push_str(&format!("    size {} {}\n", img.size.0, img.size.1));
+        kdl.push_str("}\n\n");
+    }
+
+    std::fs::write(path, kdl)?;
+    Ok(())
+}
+
 fn get_view_options(show_grid: bool, uniform_bg: bool, opacity: f32) -> Vec<String> {
     vec![
         format!("{} Show Grid", if show_grid { "✓" } else { "  " }),
@@ -556,7 +589,7 @@ impl GraphApp {
         std::fs::create_dir_all(project_dir.join("assets"))?;
         std::fs::create_dir_all(project_dir.join("code"))?;
 
-        let state_file_path = project_dir.join("state.json");
+        let state_file_path = project_dir.join("state.kdl");
 
         let project_images: Vec<GraphProjectImage> = self.loaded_images.iter()
             .map(|img| GraphProjectImage {
@@ -578,8 +611,13 @@ impl GraphApp {
             opacity: self.opacity,
         };
 
-        let content = serde_json::to_string_pretty(&state)?;
-        std::fs::write(&state_file_path, content)?;
+        save_project_to_kdl_path(&state_file_path, &state)?;
+
+        // Clean up old state.json if it exists
+        let old_json_path = project_dir.join("state.json");
+        if old_json_path.exists() {
+            let _ = std::fs::remove_file(old_json_path);
+        }
         
         self.loaded_project_path = Some(project_dir.to_path_buf());
         self.needs_rebuild = true;
@@ -628,9 +666,14 @@ impl GraphApp {
 
     fn load_project_from_path(&mut self, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
         let (state_file_path, project_dir) = if path.is_dir() {
-            (path.join("state.json"), path.to_path_buf())
+            let kdl_path = path.join("state.kdl");
+            if kdl_path.exists() {
+                (kdl_path, path.to_path_buf())
+            } else {
+                (path.join("state.json"), path.to_path_buf())
+            }
         } else {
-            if path.file_name().map_or(false, |name| name == "state.json") {
+            if path.file_name().map_or(false, |name| name == "state.json" || name == "state.kdl") {
                 (path.to_path_buf(), path.parent().unwrap_or(path).to_path_buf())
             } else {
                 (path.to_path_buf(), path.parent().unwrap_or(path).to_path_buf())
