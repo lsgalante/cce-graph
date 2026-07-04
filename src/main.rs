@@ -76,6 +76,76 @@ struct GraphApp {
     drag_image_oy: f32,
 }
 
+fn get_default_project_path() -> std::path::PathBuf {
+    let dir = if let Ok(xdg_config) = std::env::var("XDG_CONFIG_HOME") {
+        if !xdg_config.is_empty() {
+            std::path::PathBuf::from(xdg_config)
+        } else {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/home/lsgalante".to_string());
+            std::path::PathBuf::from(home).join(".config")
+        }
+    } else {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/lsgalante".to_string());
+        std::path::PathBuf::from(home).join(".config")
+    };
+    dir.join("cce").join("cce-graph").join("default.json")
+}
+
+fn ensure_default_project_file(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    if path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let default_state = GraphProjectState {
+        name: "default".to_string(),
+        nodes: vec![
+            GraphNode {
+                id: String::new(),
+                name: "Data Source".to_string(),
+                position: (1.0, 1.0),
+                parameters: vec![],
+                geom_visible: true,
+                node_type: String::new(),
+                inputs: 0,
+                outputs: 1,
+            },
+            GraphNode {
+                id: String::new(),
+                name: "Filter".to_string(),
+                position: (3.0, 1.0),
+                parameters: vec![
+                    ("input".to_string(), "Data Source".to_string(), "string".to_string())
+                ],
+                geom_visible: true,
+                node_type: String::new(),
+                inputs: 1,
+                outputs: 1,
+            },
+            GraphNode {
+                id: String::new(),
+                name: "Render Output".to_string(),
+                position: (5.0, 2.0),
+                parameters: vec![
+                    ("input".to_string(), "Filter".to_string(), "string".to_string())
+                ],
+                geom_visible: true,
+                node_type: String::new(),
+                inputs: 1,
+                outputs: 1,
+            },
+        ],
+        images: vec![],
+        show_grid: true,
+        uniform_background: false,
+        opacity: 0.95,
+    };
+    let content = serde_json::to_string_pretty(&default_state)?;
+    std::fs::write(path, content)?;
+    Ok(())
+}
+
 fn get_view_options(show_grid: bool, uniform_bg: bool, opacity: f32) -> Vec<String> {
     vec![
         format!("{} Show Grid", if show_grid { "✓" } else { "  " }),
@@ -416,41 +486,6 @@ impl Application for GraphApp {
     fn new(_qh: &QueueHandle<EngineState<Self>>, _sender: calloop::channel::Sender<Self::Message>) -> Self {
         let mut graph = Graph::new();
         
-        // Define some initial graph nodes
-        let nodes = vec![
-            GraphNode {
-                id: String::new(),
-                name: "Data Source".to_string(),
-                position: (1.0, 1.0),
-                parameters: vec![],
-                geom_visible: true,
-                node_type: String::new(),
-                inputs: 0,
-                outputs: 1,
-            },
-            GraphNode {
-                id: String::new(),
-                name: "Filter".to_string(),
-                position: (3.0, 1.0),
-                parameters: vec![("input".to_string(), "Data Source".to_string(), "string".to_string())],
-                geom_visible: true,
-                node_type: String::new(),
-                inputs: 1,
-                outputs: 1,
-            },
-            GraphNode {
-                id: String::new(),
-                name: "Render Output".to_string(),
-                position: (5.0, 2.0),
-                parameters: vec![("input".to_string(), "Filter".to_string(), "string".to_string())],
-                geom_visible: true,
-                node_type: String::new(),
-                inputs: 1,
-                outputs: 1,
-            },
-        ];
-        graph.set_nodes(&nodes);
-        
         let (show_grid, snap_enabled, uniform_background, opacity, gap_width) = load_config();
 
         // Configure initial grid settings on the graph
@@ -547,6 +582,12 @@ impl Application for GraphApp {
                 } else {
                     app.add_recent_file(&path);
                 }
+            }
+        } else {
+            let default_path = get_default_project_path();
+            let _ = ensure_default_project_file(&default_path);
+            if let Err(e) = app.load_project_from_path(&default_path) {
+                eprintln!("Failed to load default project: {:?}", e);
             }
         }
 
