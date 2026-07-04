@@ -88,7 +88,7 @@ fn get_default_project_path() -> std::path::PathBuf {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/home/lsgalante".to_string());
         std::path::PathBuf::from(home).join(".config")
     };
-    dir.join("cce").join("cce-graph").join("default.json")
+    dir.join("cce").join("cce-graph").join("default.kdl")
 }
 
 fn ensure_default_project_file(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -98,52 +98,254 @@ fn ensure_default_project_file(path: &std::path::Path) -> Result<(), Box<dyn std
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let default_state = GraphProjectState {
-        name: "default".to_string(),
-        nodes: vec![
-            GraphNode {
-                id: String::new(),
-                name: "Data Source".to_string(),
-                position: (1.0, 1.0),
-                parameters: vec![],
-                geom_visible: true,
-                node_type: String::new(),
-                inputs: 0,
-                outputs: 1,
-            },
-            GraphNode {
-                id: String::new(),
-                name: "Filter".to_string(),
-                position: (3.0, 1.0),
-                parameters: vec![
-                    ("input".to_string(), "Data Source".to_string(), "string".to_string())
-                ],
-                geom_visible: true,
-                node_type: String::new(),
-                inputs: 1,
-                outputs: 1,
-            },
-            GraphNode {
-                id: String::new(),
-                name: "Render Output".to_string(),
-                position: (5.0, 2.0),
-                parameters: vec![
-                    ("input".to_string(), "Filter".to_string(), "string".to_string())
-                ],
-                geom_visible: true,
-                node_type: String::new(),
-                inputs: 1,
-                outputs: 1,
-            },
-        ],
-        images: vec![],
-        show_grid: true,
-        uniform_background: false,
-        opacity: 0.95,
-    };
-    let content = serde_json::to_string_pretty(&default_state)?;
-    std::fs::write(path, content)?;
+    let default_kdl = r#"name "default"
+show_grid true
+uniform_background false
+opacity 0.95
+
+node "Data Source" {
+    position 1.0 1.0
+    inputs 0
+    outputs 1
+    geom_visible true
+}
+
+node "Filter" {
+    position 3.0 1.0
+    inputs 1
+    outputs 1
+    geom_visible true
+    parameter "input" value="Data Source" type="string"
+}
+
+node "Render Output" {
+    position 5.0 2.0
+    inputs 1
+    outputs 1
+    geom_visible true
+    parameter "input" value="Filter" type="string"
+}
+"#;
+    std::fs::write(path, default_kdl)?;
     Ok(())
+}
+
+fn load_project_from_kdl_path(path: &std::path::Path) -> Result<GraphProjectState, Box<dyn std::error::Error>> {
+    let content = std::fs::read_to_string(path)?;
+    let doc = content.parse::<kdl::KdlDocument>()?;
+    
+    let mut name = "default".to_string();
+    let mut show_grid = true;
+    let mut uniform_background = false;
+    let mut opacity = 0.95f32;
+    let mut nodes = Vec::new();
+    let mut images = Vec::new();
+
+    for node in doc.nodes() {
+        let name_val = node.name().value();
+        match name_val {
+            "name" => {
+                if let Some(entry) = node.entries().first() {
+                    if let kdl::KdlValue::String(s) = entry.value() {
+                        name = s.to_string();
+                    }
+                }
+            }
+            "show_grid" => {
+                if let Some(entry) = node.entries().first() {
+                    if let kdl::KdlValue::Bool(b) = entry.value() {
+                        show_grid = *b;
+                    }
+                }
+            }
+            "uniform_background" => {
+                if let Some(entry) = node.entries().first() {
+                    if let kdl::KdlValue::Bool(b) = entry.value() {
+                        uniform_background = *b;
+                    }
+                }
+            }
+            "opacity" => {
+                if let Some(entry) = node.entries().first() {
+                    match entry.value() {
+                        kdl::KdlValue::Base10Float(f) => opacity = *f as f32,
+                        kdl::KdlValue::Base10(i) => opacity = *i as f32,
+                        _ => {}
+                    }
+                }
+            }
+            "node" => {
+                let node_name = if let Some(entry) = node.entries().first() {
+                    if let kdl::KdlValue::String(s) = entry.value() {
+                        s.to_string()
+                    } else {
+                        "".to_string()
+                    }
+                } else {
+                    "".to_string()
+                };
+
+                let mut position = (0.0f32, 0.0f32);
+                let mut inputs = 0;
+                let mut outputs = 0;
+                let mut geom_visible = true;
+                let mut node_type = "".to_string();
+                let mut parameters = Vec::new();
+
+                if let Some(children) = node.children() {
+                    for child in children.nodes() {
+                        let child_name = child.name().value();
+                        match child_name {
+                            "position" => {
+                                let coords: Vec<f32> = child.entries().iter().filter_map(|e| {
+                                    match e.value() {
+                                        kdl::KdlValue::Base10Float(f) => Some(*f as f32),
+                                        kdl::KdlValue::Base10(i) => Some(*i as f32),
+                                        _ => None
+                                    }
+                                }).collect();
+                                if coords.len() >= 2 {
+                                    position = (coords[0], coords[1]);
+                                }
+                            }
+                            "inputs" => {
+                                if let Some(e) = child.entries().first() {
+                                    if let kdl::KdlValue::Base10(i) = e.value() {
+                                        inputs = *i as usize;
+                                    }
+                                }
+                            }
+                            "outputs" => {
+                                if let Some(e) = child.entries().first() {
+                                    if let kdl::KdlValue::Base10(i) = e.value() {
+                                        outputs = *i as usize;
+                                    }
+                                }
+                            }
+                            "geom_visible" => {
+                                if let Some(e) = child.entries().first() {
+                                    if let kdl::KdlValue::Bool(b) = e.value() {
+                                        geom_visible = *b;
+                                    }
+                                }
+                            }
+                            "node_type" => {
+                                if let Some(e) = child.entries().first() {
+                                    if let kdl::KdlValue::String(s) = e.value() {
+                                        node_type = s.to_string();
+                                    }
+                                }
+                            }
+                            "parameter" => {
+                                let mut param_name = "".to_string();
+                                let mut param_val = "".to_string();
+                                let mut param_type = "".to_string();
+                                if let Some(e) = child.entries().first() {
+                                    if let kdl::KdlValue::String(s) = e.value() {
+                                        param_name = s.to_string();
+                                    }
+                                }
+                                for entry in child.entries().iter().skip(1) {
+                                    if let Some(prop) = entry.name() {
+                                        let prop_str = prop.value();
+                                        match prop_str {
+                                            "value" => {
+                                                if let kdl::KdlValue::String(s) = entry.value() {
+                                                    param_val = s.to_string();
+                                                }
+                                            }
+                                            "type" => {
+                                                if let kdl::KdlValue::String(s) = entry.value() {
+                                                    param_type = s.to_string();
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                parameters.push((param_name, param_val, param_type));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                nodes.push(GraphNode {
+                    id: "".to_string(),
+                    name: node_name,
+                    position,
+                    parameters,
+                    geom_visible,
+                    node_type,
+                    inputs,
+                    outputs,
+                });
+            }
+            "image" => {
+                let img_path = if let Some(entry) = node.entries().first() {
+                    if let kdl::KdlValue::String(s) = entry.value() {
+                        s.to_string()
+                    } else {
+                        "".to_string()
+                    }
+                } else {
+                    "".to_string()
+                };
+
+                let mut position = (0.0f32, 0.0f32);
+                let mut size = (0.0f32, 0.0f32);
+
+                if let Some(children) = node.children() {
+                    for child in children.nodes() {
+                        let child_name = child.name().value();
+                        match child_name {
+                            "position" => {
+                                let coords: Vec<f32> = child.entries().iter().filter_map(|e| {
+                                    match e.value() {
+                                        kdl::KdlValue::Base10Float(f) => Some(*f as f32),
+                                        kdl::KdlValue::Base10(i) => Some(*i as f32),
+                                        _ => None
+                                    }
+                                }).collect();
+                                if coords.len() >= 2 {
+                                    position = (coords[0], coords[1]);
+                                }
+                            }
+                            "size" => {
+                                let sz: Vec<f32> = child.entries().iter().filter_map(|e| {
+                                    match e.value() {
+                                        kdl::KdlValue::Base10Float(f) => Some(*f as f32),
+                                        kdl::KdlValue::Base10(i) => Some(*i as f32),
+                                        _ => None
+                                    }
+                                }).collect();
+                                if sz.len() >= 2 {
+                                    size = (sz[0], sz[1]);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                images.push(GraphProjectImage {
+                    path: img_path,
+                    position,
+                    size,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    Ok(GraphProjectState {
+        name,
+        nodes,
+        images,
+        show_grid,
+        uniform_background,
+        opacity,
+    })
 }
 
 fn get_view_options(show_grid: bool, uniform_bg: bool, opacity: f32) -> Vec<String> {
@@ -365,8 +567,12 @@ impl GraphApp {
             }
         };
 
-        let content = std::fs::read_to_string(&state_file_path)?;
-        let state: GraphProjectState = serde_json::from_str(&content)?;
+        let state: GraphProjectState = if state_file_path.extension().map_or(false, |ext| ext == "kdl") {
+            load_project_from_kdl_path(&state_file_path)?
+        } else {
+            let content = std::fs::read_to_string(&state_file_path)?;
+            serde_json::from_str(&content)?
+        };
 
         self.graph.set_nodes(&state.nodes);
         self.show_grid = state.show_grid;
