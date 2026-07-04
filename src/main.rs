@@ -375,7 +375,77 @@ fn load_image_pixels(path: &std::path::Path) -> Option<(Vec<[u8; 4]>, u32, u32)>
     Some((pixels, nw, nh))
 }
 
+fn matches_keybind(event: &KeyEvent, keybind: &str) -> bool {
+    let kb_clean = keybind.trim().to_lowercase();
+    let parts: Vec<&str> = kb_clean.split('+').collect();
+    
+    let mut has_ctrl = false;
+    let mut has_shift = false;
+    let mut main_key_str = "";
+
+    for part in &parts {
+        match *part {
+            "ctrl" => has_ctrl = true,
+            "shift" => has_shift = true,
+            "alt" | "super" => {}
+            other => main_key_str = other,
+        }
+    }
+
+    if event.ctrl != has_ctrl || event.shift != has_shift {
+        return false;
+    }
+
+    match &event.logical_key {
+        cce_ui::widget::Key::Named(nk) => {
+            let key_str = match nk {
+                cce_ui::widget::NamedKey::Backspace => "backspace",
+                cce_ui::widget::NamedKey::Tab => "tab",
+                cce_ui::widget::NamedKey::Enter => "enter",
+                cce_ui::widget::NamedKey::Space => "space",
+                cce_ui::widget::NamedKey::ArrowDown => "down",
+                cce_ui::widget::NamedKey::ArrowLeft => "left",
+                cce_ui::widget::NamedKey::ArrowRight => "right",
+                cce_ui::widget::NamedKey::ArrowUp => "up",
+                cce_ui::widget::NamedKey::End => "end",
+                cce_ui::widget::NamedKey::Home => "home",
+                cce_ui::widget::NamedKey::PageDown => "pagedown",
+                cce_ui::widget::NamedKey::PageUp => "pageup",
+                cce_ui::widget::NamedKey::Delete => "delete",
+                _ => "",
+            };
+            key_str == main_key_str
+        }
+        cce_ui::widget::Key::Character(s) => {
+            s.to_lowercase() == main_key_str
+        }
+    }
+}
+
 impl GraphApp {
+    fn delete_selected_node(&mut self) {
+        if let Some(idx) = self.graph.selected_node() {
+            let mut nodes = self.graph.get_nodes();
+            if idx < nodes.len() {
+                let deleted_node_name = nodes[idx].name.clone();
+                nodes.remove(idx);
+                
+                // Clear inputs/parameters of other nodes pointing to this deleted node name
+                for node in &mut nodes {
+                    for param in &mut node.parameters {
+                        if param.1 == deleted_node_name {
+                            param.1 = String::new();
+                        }
+                    }
+                }
+                
+                self.graph.set_nodes(&nodes);
+                self.graph.set_selected_node(None);
+                self.needs_rebuild = true;
+            }
+        }
+    }
+
     fn update_view_options(&mut self) {
         self.dropdown_view.options = get_view_options(self.show_grid, self.uniform_background, self.opacity);
     }
@@ -1285,7 +1355,15 @@ impl Application for GraphApp {
         }
     }
 
-    fn handle_key_input(&mut self, _event: &KeyEvent, _needs_rebuild: &mut bool) -> Option<Self::Message> {
+    fn handle_key_input(&mut self, event: &KeyEvent, needs_rebuild: &mut bool) -> Option<Self::Message> {
+        if event.state == ElementState::Pressed {
+            let delete_keybind = cce_ui::layout::graph_node_delete();
+            if matches_keybind(event, &delete_keybind) {
+                self.delete_selected_node();
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            }
+        }
         None
     }
 }
