@@ -71,6 +71,9 @@ struct GraphApp {
     loaded_images: Vec<LoadedImage>,
     widgets_registered: bool,
     message_sender: calloop::channel::Sender<AppMessage>,
+    dragging_image_idx: Option<usize>,
+    drag_image_ox: f32,
+    drag_image_oy: f32,
 }
 
 fn get_view_options(show_grid: bool, uniform_bg: bool, opacity: f32) -> Vec<String> {
@@ -336,6 +339,32 @@ impl GraphApp {
         Ok(())
     }
 
+    fn hit_test_image(&self, px: f32, py: f32) -> Option<usize> {
+        let (grid_origin_x, grid_origin_y) = self.graph.grid_origin();
+        let (grid_size_x, grid_size_y) = self.graph.grid_sizes();
+        let (skipped_row_h, skipped_col_w) = self.graph.skipped_sizes();
+        
+        let step_x = grid_size_x + skipped_col_w;
+        let step_y = grid_size_y + skipped_row_h;
+        
+        for (i, img) in self.loaded_images.iter().enumerate().rev() {
+            let col = img.position.0;
+            let row = img.position.1;
+            
+            let screen_x = grid_origin_x + col * step_x;
+            let screen_y = grid_origin_y + row * step_y;
+            
+            let screen_w = img.size.0 * grid_size_x + (img.size.0 - 1.0).max(0.0) * skipped_col_w;
+            let aspect = img.pixel_height as f32 / img.pixel_width as f32;
+            let screen_h = screen_w * aspect;
+            
+            if px >= screen_x && px <= screen_x + screen_w && py >= screen_y && py <= screen_y + screen_h {
+                return Some(i);
+            }
+        }
+        None
+    }
+
     fn add_image(&mut self, src_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
         let image_name = src_path.file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -497,6 +526,9 @@ impl Application for GraphApp {
             loaded_images: Vec::new(),
             widgets_registered: false,
             message_sender: _sender.clone(),
+            dragging_image_idx: None,
+            drag_image_ox: 0.0,
+            drag_image_oy: 0.0,
         };
         
         app.root_window.set_rect(0.0, 0.0, 1024.0, 768.0);
@@ -837,6 +869,30 @@ impl Application for GraphApp {
                 if self.graph.drag_update(pos.x, pos.y) {
                     changed = true;
                 }
+            } else if let Some(img_idx) = self.dragging_image_idx {
+                let (grid_origin_x, grid_origin_y) = self.graph.grid_origin();
+                let (grid_size_x, grid_size_y) = self.graph.grid_sizes();
+                let (skipped_row_h, skipped_col_w) = self.graph.skipped_sizes();
+                let step_x = grid_size_x + skipped_col_w;
+                let step_y = grid_size_y + skipped_row_h;
+
+                let nx = pos.x - self.drag_image_ox;
+                let ny = pos.y - self.drag_image_oy;
+
+                let mut col = (nx - grid_origin_x) / step_x;
+                let mut row = (ny - grid_origin_y) / step_y;
+
+                if self.graph.grid_snap_enabled() {
+                    col = (col * 2.0).round() / 2.0;
+                    row = (row * 2.0).round() / 2.0;
+                }
+
+                if let Some(img) = self.loaded_images.get_mut(img_idx) {
+                    if (img.position.0 - col).abs() > 0.001 || (img.position.1 - row).abs() > 0.001 {
+                        img.position = (col, row);
+                        changed = true;
+                    }
+                }
             } else {
                 if self.graph.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) {
                     changed = true;
@@ -935,10 +991,28 @@ impl Application for GraphApp {
                             self.graph.drag_begin(pos.x, pos.y);
                         }
                         changed = true;
+                    } else if let Some(img_idx) = self.hit_test_image(pos.x, pos.y) {
+                        let img = &self.loaded_images[img_idx];
+                        let (grid_origin_x, grid_origin_y) = self.graph.grid_origin();
+                        let (grid_size_x, grid_size_y) = self.graph.grid_sizes();
+                        let (skipped_row_h, skipped_col_w) = self.graph.skipped_sizes();
+                        let step_x = grid_size_x + skipped_col_w;
+                        let step_y = grid_size_y + skipped_row_h;
+
+                        let img_screen_x = grid_origin_x + img.position.0 * step_x;
+                        let img_screen_y = grid_origin_y + img.position.1 * step_y;
+
+                        self.dragging_image_idx = Some(img_idx);
+                        self.drag_image_ox = pos.x - img_screen_x;
+                        self.drag_image_oy = pos.y - img_screen_y;
+                        changed = true;
                     }
                 } else if state == ElementState::Released {
                     if self.graph.is_dragging() {
                         self.graph.drag_end();
+                        changed = true;
+                    } else if self.dragging_image_idx.is_some() {
+                        self.dragging_image_idx = None;
                         changed = true;
                     } else {
                         if self.graph.mouse_input(button, state, pos.x, pos.y, &mut self.ui_context) {
