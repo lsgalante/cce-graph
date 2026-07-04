@@ -1,7 +1,7 @@
 use wayland_client::QueueHandle;
 use glyphon::{FontSystem, Buffer, Metrics, Attrs};
 use cce_ui::engine::{Application, EngineState, LogicalPosition, LogicalSize, WindowSettings};
-use cce_ui::widget::{MouseButton, ElementState, MouseScrollDelta, KeyEvent, TextItem, Element, Graph, GraphNode, MenuBar, GraphController, WidgetId, Dropdown, Backplate};
+use cce_ui::widget::{MouseButton, ElementState, MouseScrollDelta, KeyEvent, TextItem, Element, Graph, GraphNode, MenuBar, GraphController, WidgetId, Dropdown, Backplate, Plate, Label};
 use image::GenericImageView;
 
 #[derive(Debug, Clone)]
@@ -18,6 +18,7 @@ enum AppMessage {
     SetOpacity95,
     SetOpacity75,
     SetOpacity50,
+    ToggleControlPanel,
     AddNode,
     AddImage,
     AddImageFromPath(std::path::PathBuf),
@@ -74,6 +75,10 @@ struct GraphApp {
     dragging_image_idx: Option<usize>,
     drag_image_ox: f32,
     drag_image_oy: f32,
+    selected_image_idx: Option<usize>,
+    control_panel: Plate,
+    show_control_panel: bool,
+    control_panel_label: Label,
 }
 
 fn get_default_project_path() -> std::path::PathBuf {
@@ -381,13 +386,14 @@ fn save_project_to_kdl_path(path: &std::path::Path, state: &GraphProjectState) -
     Ok(())
 }
 
-fn get_view_options(show_grid: bool, uniform_bg: bool, opacity: f32) -> Vec<String> {
+fn get_view_options(show_grid: bool, uniform_bg: bool, opacity: f32, show_panel: bool) -> Vec<String> {
     vec![
         format!("{} Show Grid", if show_grid { "✓" } else { "  " }),
         format!("{} Uniform Background", if uniform_bg { "✓" } else { "  " }),
         format!("{} Opacity: 95%", if (opacity - 0.95).abs() < 0.05 { "✓" } else { "  " }),
         format!("{} Opacity: 75%", if (opacity - 0.75).abs() < 0.05 { "✓" } else { "  " }),
         format!("{} Opacity: 50%", if (opacity - 0.50).abs() < 0.05 { "✓" } else { "  " }),
+        format!("{} Control Panel", if show_panel { "✓" } else { "  " }),
     ]
 }
 
@@ -476,11 +482,17 @@ impl GraphApp {
                 self.graph.set_selected_node(None);
                 self.needs_rebuild = true;
             }
+        } else if let Some(idx) = self.selected_image_idx {
+            if idx < self.loaded_images.len() {
+                self.loaded_images.remove(idx);
+                self.selected_image_idx = None;
+                self.needs_rebuild = true;
+            }
         }
     }
 
     fn update_view_options(&mut self) {
-        self.dropdown_view.options = get_view_options(self.show_grid, self.uniform_background, self.opacity);
+        self.dropdown_view.options = get_view_options(self.show_grid, self.uniform_background, self.opacity, self.show_control_panel);
     }
 
     fn add_element_labels(
@@ -567,6 +579,13 @@ impl GraphApp {
         );
         Self::add_element_labels(
             &self.dropdown_view,
+            &self.ui_context,
+            &mut self.font_system,
+            &mut self.text_items,
+            scale,
+        );
+        Self::add_element_labels(
+            &self.control_panel,
             &self.ui_context,
             &mut self.font_system,
             &mut self.text_items,
@@ -849,7 +868,7 @@ impl Application for GraphApp {
         .with_custom_display_text("Edit");
 
         let dropdown_view = Dropdown::new(
-            get_view_options(show_grid, uniform_background, opacity),
+            get_view_options(show_grid, uniform_background, opacity, false),
             999,
         )
         .with_custom_display_text("View");
@@ -857,6 +876,17 @@ impl Application for GraphApp {
         let graph_id = WidgetId(cce_ui::widget::NEXT_WIDGET_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
 
         let root_window = Backplate::new(0.0, 0.0, 1024.0, 768.0);
+
+        let mut control_panel = Plate::new(800.0, 50.0, 210.0, 160.0)
+            .with_color([0.15, 0.15, 0.2, 0.95])
+            .with_solid_border([0.3, 0.3, 0.4, 1.0], 1.0)
+            .with_draggable(true);
+        let show_control_panel = false;
+        control_panel.visible = show_control_panel;
+
+        let control_panel_label = Label::new("No Node Selected")
+            .with_font_size(12.0)
+            .with_color([204, 204, 221]);
 
         let mut app = Self {
             root_window,
@@ -883,6 +913,10 @@ impl Application for GraphApp {
             dragging_image_idx: None,
             drag_image_ox: 0.0,
             drag_image_oy: 0.0,
+            selected_image_idx: None,
+            control_panel,
+            show_control_panel,
+            control_panel_label,
         };
         
         app.root_window.set_rect(0.0, 0.0, 1024.0, 768.0);
@@ -1034,6 +1068,13 @@ impl Application for GraphApp {
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }
+            AppMessage::ToggleControlPanel => {
+                self.show_control_panel = !self.show_control_panel;
+                self.control_panel.visible = self.show_control_panel;
+                self.update_view_options();
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            }
             AppMessage::AddNode => {
                 let mut nodes = self.graph.get_nodes();
                 let next_id = nodes.len() + 1;
@@ -1077,6 +1118,7 @@ impl Application for GraphApp {
         self.ui_context.clear_popovers();
         cce_ui::widget::popovers::clear();
 
+        let is_first_layout = !self.widgets_registered;
         if !self.widgets_registered {
             unsafe {
                 let self_ptr = self as *mut Self;
@@ -1087,14 +1129,64 @@ impl Application for GraphApp {
                 self.ui_context.register_widget(self.dropdown_edit.base().unwrap().id(), &mut (*self_ptr).dropdown_edit as *mut Dropdown as *mut (dyn Element + 'static));
                 self.ui_context.register_widget(self.dropdown_view.base().unwrap().id(), &mut (*self_ptr).dropdown_view as *mut Dropdown as *mut (dyn Element + 'static));
                 self.ui_context.register_widget(self.graph_id, &mut (*self_ptr).graph as *mut Graph as *mut (dyn Element + 'static));
+                self.ui_context.register_widget(self.control_panel.base().unwrap().id(), &mut (*self_ptr).control_panel as *mut Plate as *mut (dyn Element + 'static));
+                self.ui_context.register_widget(self.control_panel_label.base().unwrap().id(), &mut (*self_ptr).control_panel_label as *mut Label as *mut (dyn Element + 'static));
 
                 self.root_window.add_child(self.menu_bar.as_ptr_mut(), &mut self.ui_context);
                 self.root_window.add_child(self.dropdown_file.as_ptr_mut(), &mut self.ui_context);
                 self.root_window.add_child(self.dropdown_edit.as_ptr_mut(), &mut self.ui_context);
                 self.root_window.add_child(self.dropdown_view.as_ptr_mut(), &mut self.ui_context);
                 self.root_window.add_child(self.graph.as_ptr_mut(), &mut self.ui_context);
+                self.control_panel.add_child(self.control_panel_label.as_ptr_mut(), &mut self.ui_context);
+                self.root_window.add_child(self.control_panel.as_ptr_mut(), &mut self.ui_context);
             }
             self.widgets_registered = true;
+        }
+
+        // Check selected node and update control panel label
+        let selected_node_idx = self.graph.selected_node();
+        let label_text = if let Some(idx) = selected_node_idx {
+            let nodes = self.graph.get_nodes();
+            if let Some(node) = nodes.get(idx) {
+                let mut info = format!("Selected Node:\nID: {}\nName: {}\nType: {}\nInputs: {}\nOutputs: {}",
+                    node.id, node.name, node.node_type, node.inputs, node.outputs
+                );
+                if !node.parameters.is_empty() {
+                    info.push_str("\n\nParameters:");
+                    for (name, val, p_type) in &node.parameters {
+                        info.push_str(&format!("\n- {}: {} ({})", name, val, p_type));
+                    }
+                }
+                info
+            } else {
+                "No Object Selected".to_string()
+            }
+        } else if let Some(img_idx) = self.selected_image_idx {
+            if let Some(img) = self.loaded_images.get(img_idx) {
+                let filename = std::path::Path::new(&img.path)
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .unwrap_or(&img.path);
+                format!(
+                    "Selected Image:\nName: {}\nPosition: (Col {:.1}, Row {:.1})\nSize: {:.1} x {:.1} cells\nResolution: {} x {} px",
+                    filename, img.position.0, img.position.1,
+                    img.size.0, img.size.1,
+                    img.pixel_width, img.pixel_height
+                )
+            } else {
+                "No Object Selected".to_string()
+            }
+        } else {
+            "No Object Selected".to_string()
+        };
+
+        let text_changed = {
+            let current_text = self.control_panel_label.base().and_then(|b| b.label.as_ref());
+            current_text != Some(&label_text)
+        };
+        if text_changed {
+            self.control_panel_label.set_text(&label_text);
+            self.needs_rebuild = true;
         }
 
         if self.dropdown_file.popover_rect().is_some() {
@@ -1111,7 +1203,7 @@ impl Application for GraphApp {
         }
 
         let size_changed = self.width != size.width as u32 || self.height != size.height as u32 || self.scale_factor != scale;
-        if self.needs_rebuild || size_changed {
+        if self.needs_rebuild || size_changed || is_first_layout {
             self.width = size.width as u32;
             self.height = size.height as u32;
             self.scale_factor = scale;
@@ -1128,6 +1220,14 @@ impl Application for GraphApp {
             
             // Layout Graph below MenuBar
             self.graph.set_rect(0.0, 42.0, size.width, size.height - 42.0);
+
+            // Initial control panel positioning and bounds settings
+            if size_changed || is_first_layout {
+                let cpx = (size.width - 230.0).max(10.0);
+                let cpy = 55.0; // Float below MenuBar
+                self.control_panel.set_rect(cpx, cpy, 210.0, 160.0);
+            }
+            self.control_panel.set_bounds(0.0, 42.0, size.width, size.height - 42.0);
             
             self.rebuild_text_items();
             self.needs_rebuild = false;
@@ -1166,7 +1266,7 @@ impl Application for GraphApp {
             }
         };
 
-        for img in &self.loaded_images {
+        for (i, img) in self.loaded_images.iter().enumerate() {
             let col = img.position.0;
             let row = img.position.1;
             
@@ -1194,6 +1294,20 @@ impl Application for GraphApp {
                     
                     push_clipped(px_x, px_y, px_w + 0.5, px_h + 0.5, [r, g, b, a], quads);
                 }
+            }
+
+            if Some(i) == self.selected_image_idx {
+                let border_thickness = 2.0;
+                let border_color = [0.0, 0.75, 1.0, 1.0]; // Vibrant cyan selection outline
+                
+                // Top border
+                push_clipped(screen_x - border_thickness, screen_y - border_thickness, screen_w + 2.0 * border_thickness, border_thickness, border_color, quads);
+                // Bottom border
+                push_clipped(screen_x - border_thickness, screen_y + screen_h, screen_w + 2.0 * border_thickness, border_thickness, border_color, quads);
+                // Left border
+                push_clipped(screen_x - border_thickness, screen_y, border_thickness, screen_h, border_color, quads);
+                // Right border
+                push_clipped(screen_x + screen_w, screen_y, border_thickness, screen_h, border_color, quads);
             }
         }
     }
@@ -1224,40 +1338,55 @@ impl Application for GraphApp {
             if self.dropdown_edit.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) { changed = true; }
             if self.dropdown_view.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) { changed = true; }
         } else {
-            // Otherwise feed it to Graph
-            if self.graph.is_dragging() {
-                if self.graph.drag_update(pos.x, pos.y) {
-                    changed = true;
+            let mut handled_by_panel = false;
+            if self.control_panel.visible {
+                if self.control_panel.is_dragging() || self.control_panel.hit_test(pos.x, pos.y, &self.ui_context) {
+                    if self.control_panel.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) { changed = true; }
+                    handled_by_panel = true;
+                } else {
+                    if self.control_panel.on_cursor_moved(-1000.0, -1000.0, &mut self.ui_context) { changed = true; }
                 }
-            } else if let Some(img_idx) = self.dragging_image_idx {
-                let (grid_origin_x, grid_origin_y) = self.graph.grid_origin();
-                let (grid_size_x, grid_size_y) = self.graph.grid_sizes();
-                let (skipped_row_h, skipped_col_w) = self.graph.skipped_sizes();
-                let step_x = grid_size_x + skipped_col_w;
-                let step_y = grid_size_y + skipped_row_h;
+            }
 
-                let nx = pos.x - self.drag_image_ox;
-                let ny = pos.y - self.drag_image_oy;
+            if !handled_by_panel {
+                // Otherwise feed it to Graph
+                if self.graph.is_dragging() {
+                    if self.graph.drag_update(pos.x, pos.y) {
+                        changed = true;
+                    }
+                } else if let Some(img_idx) = self.dragging_image_idx {
+                    let (grid_origin_x, grid_origin_y) = self.graph.grid_origin();
+                    let (grid_size_x, grid_size_y) = self.graph.grid_sizes();
+                    let (skipped_row_h, skipped_col_w) = self.graph.skipped_sizes();
+                    let step_x = grid_size_x + skipped_col_w;
+                    let step_y = grid_size_y + skipped_row_h;
 
-                let mut col = (nx - grid_origin_x) / step_x;
-                let mut row = (ny - grid_origin_y) / step_y;
+                    let nx = pos.x - self.drag_image_ox;
+                    let ny = pos.y - self.drag_image_oy;
 
-                if self.graph.grid_snap_enabled() {
-                    col = (col * 2.0).round() / 2.0;
-                    row = (row * 2.0).round() / 2.0;
-                }
+                    let mut col = (nx - grid_origin_x) / step_x;
+                    let mut row = (ny - grid_origin_y) / step_y;
 
-                if let Some(img) = self.loaded_images.get_mut(img_idx) {
-                    if (img.position.0 - col).abs() > 0.001 || (img.position.1 - row).abs() > 0.001 {
-                        img.position = (col, row);
+                    if self.graph.grid_snap_enabled() {
+                        col = (col * 2.0).round() / 2.0;
+                        row = (row * 2.0).round() / 2.0;
+                    }
+
+                    if let Some(img) = self.loaded_images.get_mut(img_idx) {
+                        if (img.position.0 - col).abs() > 0.001 || (img.position.1 - row).abs() > 0.001 {
+                            img.position = (col, row);
+                            changed = true;
+                        }
+                    }
+                } else {
+                    if self.graph.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) {
                         changed = true;
                     }
                 }
             } else {
-                if self.graph.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) {
-                    changed = true;
-                }
+                if self.graph.on_cursor_moved(-1000.0, -1000.0, &mut self.ui_context) { changed = true; }
             }
+            
             // Clear hover states if cursor moved away
             if self.dropdown_file.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) { changed = true; }
             if self.dropdown_edit.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) { changed = true; }
@@ -1325,6 +1454,7 @@ impl Application for GraphApp {
                         2 => msg_out = Some(AppMessage::SetOpacity95),
                         3 => msg_out = Some(AppMessage::SetOpacity75),
                         4 => msg_out = Some(AppMessage::SetOpacity50),
+                        5 => msg_out = Some(AppMessage::ToggleControlPanel),
                         _ => {}
                     }
                     self.dropdown_view.selected = 999;
@@ -1343,40 +1473,59 @@ impl Application for GraphApp {
                 }
             }
         } else {
-            // Otherwise route to Graph
-            if button == MouseButton::Left {
-                if state == ElementState::Pressed {
-                    if self.graph.mouse_input(button, state, pos.x, pos.y, &mut self.ui_context) {
-                        if self.graph.is_dragging() {
-                            self.graph.drag_begin(pos.x, pos.y);
-                        }
-                        changed = true;
-                    } else if let Some(img_idx) = self.hit_test_image(pos.x, pos.y) {
-                        let img = &self.loaded_images[img_idx];
-                        let (grid_origin_x, grid_origin_y) = self.graph.grid_origin();
-                        let (grid_size_x, grid_size_y) = self.graph.grid_sizes();
-                        let (skipped_row_h, skipped_col_w) = self.graph.skipped_sizes();
-                        let step_x = grid_size_x + skipped_col_w;
-                        let step_y = grid_size_y + skipped_row_h;
-
-                        let img_screen_x = grid_origin_x + img.position.0 * step_x;
-                        let img_screen_y = grid_origin_y + img.position.1 * step_y;
-
-                        self.dragging_image_idx = Some(img_idx);
-                        self.drag_image_ox = pos.x - img_screen_x;
-                        self.drag_image_oy = pos.y - img_screen_y;
+            let mut handled_by_panel = false;
+            if self.control_panel.visible {
+                if self.control_panel.is_dragging() || self.control_panel.hit_test(pos.x, pos.y, &self.ui_context) {
+                    if self.control_panel.mouse_input(button, state, pos.x, pos.y, &mut self.ui_context) {
                         changed = true;
                     }
-                } else if state == ElementState::Released {
-                    if self.graph.is_dragging() {
-                        self.graph.drag_end();
-                        changed = true;
-                    } else if self.dragging_image_idx.is_some() {
-                        self.dragging_image_idx = None;
-                        changed = true;
-                    } else {
+                    handled_by_panel = true;
+                }
+            }
+
+            if !handled_by_panel {
+                // Otherwise route to Graph
+                if button == MouseButton::Left {
+                    if state == ElementState::Pressed {
                         if self.graph.mouse_input(button, state, pos.x, pos.y, &mut self.ui_context) {
+                            if self.graph.is_dragging() {
+                                self.graph.drag_begin(pos.x, pos.y);
+                            }
+                            self.selected_image_idx = None;
                             changed = true;
+                        } else if let Some(img_idx) = self.hit_test_image(pos.x, pos.y) {
+                            let img = &self.loaded_images[img_idx];
+                            let (grid_origin_x, grid_origin_y) = self.graph.grid_origin();
+                            let (grid_size_x, grid_size_y) = self.graph.grid_sizes();
+                            let (skipped_row_h, skipped_col_w) = self.graph.skipped_sizes();
+                            let step_x = grid_size_x + skipped_col_w;
+                            let step_y = grid_size_y + skipped_row_h;
+
+                            let img_screen_x = grid_origin_x + img.position.0 * step_x;
+                            let img_screen_y = grid_origin_y + img.position.1 * step_y;
+
+                            self.dragging_image_idx = Some(img_idx);
+                            self.drag_image_ox = pos.x - img_screen_x;
+                            self.drag_image_oy = pos.y - img_screen_y;
+                            self.selected_image_idx = Some(img_idx);
+                            self.graph.set_selected_node(None);
+                            changed = true;
+                        } else {
+                            self.selected_image_idx = None;
+                            self.graph.set_selected_node(None);
+                            changed = true;
+                        }
+                    } else if state == ElementState::Released {
+                        if self.graph.is_dragging() {
+                            self.graph.drag_end();
+                            changed = true;
+                        } else if self.dragging_image_idx.is_some() {
+                            self.dragging_image_idx = None;
+                            changed = true;
+                        } else {
+                            if self.graph.mouse_input(button, state, pos.x, pos.y, &mut self.ui_context) {
+                                changed = true;
+                            }
                         }
                     }
                 }
