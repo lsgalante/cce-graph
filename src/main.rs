@@ -82,18 +82,7 @@ struct GraphApp {
 }
 
 fn get_default_project_path() -> std::path::PathBuf {
-    let dir = if let Ok(xdg_config) = std::env::var("XDG_CONFIG_HOME") {
-        if !xdg_config.is_empty() {
-            std::path::PathBuf::from(xdg_config)
-        } else {
-            let home = std::env::var("HOME").unwrap_or_default();
-            std::path::PathBuf::from(home).join(".config")
-        }
-    } else {
-        let home = std::env::var("HOME").unwrap_or_default();
-        std::path::PathBuf::from(home).join(".config")
-    };
-    dir.join("cce").join("cce-graph").join("default.kdl")
+    cce_ui::config::cce_config_dir().join("cce-graph").join("default.kdl")
 }
 
 fn ensure_default_project_file(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
