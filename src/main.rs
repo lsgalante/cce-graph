@@ -86,11 +86,11 @@ fn get_default_project_path() -> std::path::PathBuf {
         if !xdg_config.is_empty() {
             std::path::PathBuf::from(xdg_config)
         } else {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/home/lsgalante".to_string());
+            let home = std::env::var("HOME").unwrap_or_default();
             std::path::PathBuf::from(home).join(".config")
         }
     } else {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/lsgalante".to_string());
+        let home = std::env::var("HOME").unwrap_or_default();
         std::path::PathBuf::from(home).join(".config")
     };
     dir.join("cce").join("cce-graph").join("default.kdl")
