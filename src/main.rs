@@ -56,6 +56,7 @@ struct GraphApp {
     dropdown_file: Dropdown,
     dropdown_edit: Dropdown,
     dropdown_view: Dropdown,
+    menu_dropdown_bar: Plate,
     graph: Graph,
     graph_id: WidgetId,
     text_items: Vec<TextItem>,
@@ -875,12 +876,28 @@ impl Application for GraphApp {
             .with_font_size(12.0)
             .with_color([204, 204, 221]);
 
+        // Transparent Plate that lays out the File/Edit/View dropdown row via the scene engine
+        // (Phase 2b). Pure layout container over the menu bar; the menu_bar draws the bar itself.
+        let menu_dropdown_bar = Plate::new(0.0, 0.0, 0.0, 0.0)
+            .with_color([0.0, 0.0, 0.0, 0.0])
+            .with_blur(false)
+            .with_draggable(false)
+            .with_engine_layout({
+                let mut s = cce_ui::scene::layout::Style::row()
+                    .gap(10.0)
+                    .main_align(cce_ui::scene::layout::MainAlign::Start)
+                    .cross_align(cce_ui::scene::layout::CrossAlign::Start);
+                s.padding = cce_ui::scene::layout::Edges { left: 10.0, right: 0.0, top: 8.0, bottom: 0.0 };
+                s
+            });
+
         let mut app = Self {
             root_window,
             menu_bar,
             dropdown_file,
             dropdown_edit,
             dropdown_view,
+            menu_dropdown_bar,
             graph,
             graph_id,
             text_items: Vec::new(),
@@ -1115,14 +1132,16 @@ impl Application for GraphApp {
                 self.ui_context.register_widget(self.dropdown_file.base().unwrap().id(), &mut (*self_ptr).dropdown_file as *mut Dropdown as *mut (dyn Element + 'static));
                 self.ui_context.register_widget(self.dropdown_edit.base().unwrap().id(), &mut (*self_ptr).dropdown_edit as *mut Dropdown as *mut (dyn Element + 'static));
                 self.ui_context.register_widget(self.dropdown_view.base().unwrap().id(), &mut (*self_ptr).dropdown_view as *mut Dropdown as *mut (dyn Element + 'static));
+                self.ui_context.register_widget(self.menu_dropdown_bar.base().unwrap().id(), &mut (*self_ptr).menu_dropdown_bar as *mut Plate as *mut (dyn Element + 'static));
                 self.ui_context.register_widget(self.graph_id, &mut (*self_ptr).graph as *mut Graph as *mut (dyn Element + 'static));
                 self.ui_context.register_widget(self.control_panel.base().unwrap().id(), &mut (*self_ptr).control_panel as *mut Plate as *mut (dyn Element + 'static));
                 self.ui_context.register_widget(self.control_panel_label.base().unwrap().id(), &mut (*self_ptr).control_panel_label as *mut Label as *mut (dyn Element + 'static));
 
                 self.root_window.add_child(self.menu_bar.as_ptr_mut(), &mut self.ui_context);
-                self.root_window.add_child(self.dropdown_file.as_ptr_mut(), &mut self.ui_context);
-                self.root_window.add_child(self.dropdown_edit.as_ptr_mut(), &mut self.ui_context);
-                self.root_window.add_child(self.dropdown_view.as_ptr_mut(), &mut self.ui_context);
+                self.root_window.add_child(self.menu_dropdown_bar.as_ptr_mut(), &mut self.ui_context);
+                self.menu_dropdown_bar.add_child(self.dropdown_file.as_ptr_mut(), &mut self.ui_context);
+                self.menu_dropdown_bar.add_child(self.dropdown_edit.as_ptr_mut(), &mut self.ui_context);
+                self.menu_dropdown_bar.add_child(self.dropdown_view.as_ptr_mut(), &mut self.ui_context);
                 self.root_window.add_child(self.graph.as_ptr_mut(), &mut self.ui_context);
                 self.control_panel.add_child(self.control_panel_label.as_ptr_mut(), &mut self.ui_context);
                 self.root_window.add_child(self.control_panel.as_ptr_mut(), &mut self.ui_context);
@@ -1200,10 +1219,15 @@ impl Application for GraphApp {
             // Layout MenuBar at the top
             self.menu_bar.set_rect(0.0, 0.0, size.width, 42.0);
             
-            // Layout Dropdowns on MenuBar
-            self.dropdown_file.set_rect(10.0, 8.0, 70.0, 26.0);
-            self.dropdown_edit.set_rect(90.0, 8.0, 70.0, 26.0);
-            self.dropdown_view.set_rect(170.0, 8.0, 70.0, 26.0);
+            // Phase 2b: lay out the File/Edit/View dropdown row via the scene layout engine; the
+            // dropdowns size to their labels (Dropdown::intrinsic_size) instead of fixed 70px.
+            let menu_bar_ptr: *mut (dyn cce_ui::widget::Element + 'static) =
+                &mut self.menu_dropdown_bar as *mut _;
+            cce_ui::scene::bridge::layout_subtree(
+                &self.ui_context,
+                menu_bar_ptr,
+                cce_ui::scene::layout::Rect { x: 0.0, y: 0.0, width: size.width, height: 42.0 },
+            );
             
             // Layout Graph below MenuBar
             self.graph.set_rect(0.0, 42.0, size.width, size.height - 42.0);
