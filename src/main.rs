@@ -1327,6 +1327,17 @@ impl Application for GraphApp {
         quads.extend(self.root_window.all_rounded_quads(&self.ui_context));
     }
 
+    fn display_list(&mut self) -> Option<cce_ui::scene::paint::DisplayList> {
+        // Opt-in A/B toggle for the Phase 3 single paint path: with CCE_PAINT_WALK set, render the
+        // widget tree via scene::painter (one traversal -> one clipped DisplayList, drawn with GPU
+        // scissor) instead of the legacy all_rounded_quads geometry. Default off => legacy path.
+        if std::env::var("CCE_PAINT_WALK").is_err() {
+            return None;
+        }
+        let root: *mut (dyn cce_ui::widget::Element + 'static) = self.root_window.as_ptr_mut();
+        Some(cce_ui::scene::painter::paint_tree(&self.ui_context, root))
+    }
+
     fn text_items(&self) -> &[TextItem] {
         &self.text_items
     }
