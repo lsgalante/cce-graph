@@ -79,7 +79,7 @@ struct GraphApp {
     selected_image_idx: Option<usize>,
     control_panel: Plate,
     show_control_panel: bool,
-    control_panel_label: Label,
+    control_panel_label: cce_ui::widget::Adapted<cce_ui::widget::Label>,
 }
 
 fn get_default_project_path() -> std::path::PathBuf {
@@ -1135,7 +1135,7 @@ impl Application for GraphApp {
                 self.ui_context.register_widget(self.menu_dropdown_bar.base().unwrap().id(), &mut (*self_ptr).menu_dropdown_bar as *mut Plate as *mut (dyn Element + 'static));
                 self.ui_context.register_widget(self.graph_id, &mut (*self_ptr).graph as *mut Graph as *mut (dyn Element + 'static));
                 self.ui_context.register_widget(self.control_panel.base().unwrap().id(), &mut (*self_ptr).control_panel as *mut Plate as *mut (dyn Element + 'static));
-                self.ui_context.register_widget(self.control_panel_label.base().unwrap().id(), &mut (*self_ptr).control_panel_label as *mut Label as *mut (dyn Element + 'static));
+                self.ui_context.register_widget(self.control_panel_label.base().unwrap().id(), (*self_ptr).control_panel_label.as_ptr_mut());
 
                 self.root_window.add_child(self.menu_bar.as_ptr_mut(), &mut self.ui_context);
                 self.root_window.add_child(self.menu_dropdown_bar.as_ptr_mut(), &mut self.ui_context);
