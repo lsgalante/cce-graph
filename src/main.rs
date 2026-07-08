@@ -52,7 +52,7 @@ struct LoadedImage {
 
 struct GraphApp {
     root_window: Backplate,
-    menu_bar: MenuBar,
+    menu_bar: Adapted<MenuBar>,
     dropdown_file: Dropdown,
     dropdown_edit: Dropdown,
     dropdown_view: Dropdown,
@@ -1128,7 +1128,7 @@ impl Application for GraphApp {
                 let self_ptr = self as *mut Self;
                 
                 self.ui_context.register_widget(self.root_window.base().unwrap().id(), &mut (*self_ptr).root_window as *mut Backplate as *mut (dyn Element + 'static));
-                self.ui_context.register_widget(self.menu_bar.base.id(), &mut (*self_ptr).menu_bar as *mut MenuBar as *mut (dyn Element + 'static));
+                self.ui_context.register_widget(self.menu_bar.id(), (*self_ptr).menu_bar.as_ptr_mut());
                 self.ui_context.register_widget(self.dropdown_file.base().unwrap().id(), &mut (*self_ptr).dropdown_file as *mut Dropdown as *mut (dyn Element + 'static));
                 self.ui_context.register_widget(self.dropdown_edit.base().unwrap().id(), &mut (*self_ptr).dropdown_edit as *mut Dropdown as *mut (dyn Element + 'static));
                 self.ui_context.register_widget(self.dropdown_view.base().unwrap().id(), &mut (*self_ptr).dropdown_view as *mut Dropdown as *mut (dyn Element + 'static));
