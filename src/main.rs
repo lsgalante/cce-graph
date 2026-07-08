@@ -1,7 +1,7 @@
 use wayland_client::QueueHandle;
 use glyphon::{FontSystem, Buffer, Metrics, Attrs};
 use cce_ui::engine::{Application, EngineState, LogicalPosition, LogicalSize, WindowSettings};
-use cce_ui::widget::{MouseButton, ElementState, MouseScrollDelta, KeyEvent, TextItem, Element, Graph, GraphNode, MenuBar, GraphController, WidgetId, Dropdown, Backplate, Plate, Label};
+use cce_ui::widget::{Adapted, MouseButton, ElementState, MouseScrollDelta, KeyEvent, TextItem, Element, Graph, GraphNode, MenuBar, GraphController, WidgetId, Dropdown, Backplate, Plate, Label};
 use image::GenericImageView;
 
 #[derive(Debug, Clone)]
@@ -57,7 +57,7 @@ struct GraphApp {
     dropdown_edit: Dropdown,
     dropdown_view: Dropdown,
     menu_dropdown_bar: Plate,
-    graph: Graph,
+    graph: Adapted<Graph>,
     graph_id: WidgetId,
     text_items: Vec<TextItem>,
     font_system: FontSystem,
@@ -1133,7 +1133,7 @@ impl Application for GraphApp {
                 self.ui_context.register_widget(self.dropdown_edit.base().unwrap().id(), &mut (*self_ptr).dropdown_edit as *mut Dropdown as *mut (dyn Element + 'static));
                 self.ui_context.register_widget(self.dropdown_view.base().unwrap().id(), &mut (*self_ptr).dropdown_view as *mut Dropdown as *mut (dyn Element + 'static));
                 self.ui_context.register_widget(self.menu_dropdown_bar.base().unwrap().id(), &mut (*self_ptr).menu_dropdown_bar as *mut Plate as *mut (dyn Element + 'static));
-                self.ui_context.register_widget(self.graph_id, &mut (*self_ptr).graph as *mut Graph as *mut (dyn Element + 'static));
+                self.ui_context.register_widget(self.graph_id, (*self_ptr).graph.as_ptr_mut());
                 self.ui_context.register_widget(self.control_panel.base().unwrap().id(), &mut (*self_ptr).control_panel as *mut Plate as *mut (dyn Element + 'static));
                 self.ui_context.register_widget(self.control_panel_label.base().unwrap().id(), (*self_ptr).control_panel_label.as_ptr_mut());
 
