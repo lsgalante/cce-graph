@@ -53,9 +53,9 @@ struct LoadedImage {
 struct GraphApp {
     root_window: Backplate,
     menu_bar: Adapted<MenuBar>,
-    dropdown_file: Dropdown,
-    dropdown_edit: Dropdown,
-    dropdown_view: Dropdown,
+    dropdown_file: Adapted<Dropdown>,
+    dropdown_edit: Adapted<Dropdown>,
+    dropdown_view: Adapted<Dropdown>,
     menu_dropdown_bar: Plate,
     graph: Adapted<Graph>,
     graph_id: WidgetId,
@@ -1129,9 +1129,9 @@ impl Application for GraphApp {
                 
                 self.ui_context.register_widget(self.root_window.base().unwrap().id(), &mut (*self_ptr).root_window as *mut Backplate as *mut (dyn Element + 'static));
                 self.ui_context.register_widget(self.menu_bar.id(), (*self_ptr).menu_bar.as_ptr_mut());
-                self.ui_context.register_widget(self.dropdown_file.base().unwrap().id(), &mut (*self_ptr).dropdown_file as *mut Dropdown as *mut (dyn Element + 'static));
-                self.ui_context.register_widget(self.dropdown_edit.base().unwrap().id(), &mut (*self_ptr).dropdown_edit as *mut Dropdown as *mut (dyn Element + 'static));
-                self.ui_context.register_widget(self.dropdown_view.base().unwrap().id(), &mut (*self_ptr).dropdown_view as *mut Dropdown as *mut (dyn Element + 'static));
+                self.ui_context.register_widget(self.dropdown_file.base().unwrap().id(), (*self_ptr).dropdown_file.as_ptr_mut());
+                self.ui_context.register_widget(self.dropdown_edit.base().unwrap().id(), (*self_ptr).dropdown_edit.as_ptr_mut());
+                self.ui_context.register_widget(self.dropdown_view.base().unwrap().id(), (*self_ptr).dropdown_view.as_ptr_mut());
                 self.ui_context.register_widget(self.menu_dropdown_bar.base().unwrap().id(), &mut (*self_ptr).menu_dropdown_bar as *mut Plate as *mut (dyn Element + 'static));
                 self.ui_context.register_widget(self.graph_id, (*self_ptr).graph.as_ptr_mut());
                 self.ui_context.register_widget(self.control_panel.base().unwrap().id(), &mut (*self_ptr).control_panel as *mut Plate as *mut (dyn Element + 'static));
