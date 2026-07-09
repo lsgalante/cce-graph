@@ -1,6 +1,6 @@
 use wayland_client::QueueHandle;
 use cce_ui::engine::{Application, EngineState, LogicalPosition, LogicalSize, WindowSettings};
-use cce_ui::widget::{Adapted, MouseButton, ElementState, MouseScrollDelta, KeyEvent, Element, Graph, GraphNode, MenuBar, GraphController, WidgetId, Dropdown, Backplate, Plate, Label};
+use cce_ui::widget::{Adapted, MouseButton, ElementState, MouseScrollDelta, KeyEvent, Element, Graph, GraphNode, MenuBar, GraphController, WidgetId, Dropdown, Plate, Label};
 use image::GenericImageView;
 
 #[derive(Debug, Clone)]
@@ -50,7 +50,6 @@ struct LoadedImage {
 }
 
 struct GraphApp {
-    root_window: Backplate,
     menu_bar: Adapted<MenuBar>,
     dropdown_file: Adapted<Dropdown>,
     dropdown_edit: Adapted<Dropdown>,
@@ -706,6 +705,12 @@ impl Application for GraphApp {
         Some(&self.ui_context)
     }
 
+    fn is_movable_backplate_at(&self, px: f32, py: f32) -> bool {
+        // Root Backplate dissolved (Phase 6m): the surface itself is the movable plate; drag
+        // anywhere a drag-blocking widget isn't.
+        self.ui_context.drag_allowed_at(px, py)
+    }
+
     fn ui_context_mut(&mut self) -> Option<&mut cce_ui::context::UiContext> {
         Some(&mut self.ui_context)
     }
@@ -764,7 +769,6 @@ impl Application for GraphApp {
 
         let graph_id = WidgetId(cce_ui::widget::NEXT_WIDGET_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
 
-        let root_window = Backplate::new(0.0, 0.0, 1024.0, 768.0);
 
         let mut control_panel = Plate::new(800.0, 50.0, 210.0, 160.0)
             .with_draggable(true);
@@ -791,7 +795,7 @@ impl Application for GraphApp {
             });
 
         let mut app = Self {
-            root_window,
+
             menu_bar,
             dropdown_file,
             dropdown_edit,
@@ -820,7 +824,7 @@ impl Application for GraphApp {
             control_panel_label,
         };
         
-        app.root_window.set_rect(0.0, 0.0, 1024.0, 768.0);
+
         app.menu_bar.set_rect(0.0, 0.0, 1024.0, 42.0);
         app.dropdown_file.set_rect(10.0, 8.0, 70.0, 26.0);
         app.dropdown_edit.set_rect(90.0, 8.0, 70.0, 26.0);
@@ -1016,7 +1020,7 @@ impl Application for GraphApp {
 
     fn display_list(&mut self, size: LogicalSize, scale: f64) -> Option<cce_ui::scene::paint::DisplayList> {
         // Phase 6 single paint path: setup/relayout (the old view() body), then the whole
-        // frame — the Backplate tree walked into one list plus the loaded images' pixel
+        // frame — the widget tree walked into one list plus the loaded images' pixel
         // quads — is built here. Widget text comes from the paint walk (Graph's node names
         // through its per-label hatch, the control panel via the 6i container-text fix).
         self.ui_context.clear_popovers();
@@ -1024,10 +1028,12 @@ impl Application for GraphApp {
 
         let is_first_layout = !self.widgets_registered;
         if !self.widgets_registered {
+            // The root Backplate is DISSOLVED (Phase 6m recipe): top-level widgets register
+            // directly (parentless), the window plate is emitted below as prims, and the two
+            // Plates keep their own children.
             unsafe {
                 let self_ptr = self as *mut Self;
-                
-                self.ui_context.register_widget(self.root_window.base().unwrap().id(), &mut (*self_ptr).root_window as *mut Backplate as *mut (dyn Element + 'static));
+
                 self.ui_context.register_widget(self.menu_bar.id(), (*self_ptr).menu_bar.as_ptr_mut());
                 self.ui_context.register_widget(self.dropdown_file.base().unwrap().id(), (*self_ptr).dropdown_file.as_ptr_mut());
                 self.ui_context.register_widget(self.dropdown_edit.base().unwrap().id(), (*self_ptr).dropdown_edit.as_ptr_mut());
@@ -1037,14 +1043,10 @@ impl Application for GraphApp {
                 self.ui_context.register_widget(self.control_panel.base().unwrap().id(), &mut (*self_ptr).control_panel as *mut Plate as *mut (dyn Element + 'static));
                 self.ui_context.register_widget(self.control_panel_label.base().unwrap().id(), (*self_ptr).control_panel_label.as_ptr_mut());
 
-                self.root_window.add_child(self.menu_bar.as_ptr_mut(), &mut self.ui_context);
-                self.root_window.add_child(self.menu_dropdown_bar.as_ptr_mut(), &mut self.ui_context);
                 self.menu_dropdown_bar.add_child(self.dropdown_file.as_ptr_mut(), &mut self.ui_context);
                 self.menu_dropdown_bar.add_child(self.dropdown_edit.as_ptr_mut(), &mut self.ui_context);
                 self.menu_dropdown_bar.add_child(self.dropdown_view.as_ptr_mut(), &mut self.ui_context);
-                self.root_window.add_child(self.graph.as_ptr_mut(), &mut self.ui_context);
                 self.control_panel.add_child(self.control_panel_label.as_ptr_mut(), &mut self.ui_context);
-                self.root_window.add_child(self.control_panel.as_ptr_mut(), &mut self.ui_context);
             }
             self.widgets_registered = true;
         }
@@ -1096,16 +1098,22 @@ impl Application for GraphApp {
         }
 
         if self.dropdown_file.popover_rect().is_some() {
+            // ui_context ONLY (the 6l pattern): the popover is drawn in the display list by
+            // the walk; a global registration spawns a render-only xdg popup that swallows
+            // clicks on the open menu.
             self.ui_context.register_popover(&self.dropdown_file);
-            cce_ui::widget::popovers::register(&self.dropdown_file);
         }
         if self.dropdown_edit.popover_rect().is_some() {
+            // ui_context ONLY (the 6l pattern): the popover is drawn in the display list by
+            // the walk; a global registration spawns a render-only xdg popup that swallows
+            // clicks on the open menu.
             self.ui_context.register_popover(&self.dropdown_edit);
-            cce_ui::widget::popovers::register(&self.dropdown_edit);
         }
         if self.dropdown_view.popover_rect().is_some() {
+            // ui_context ONLY (the 6l pattern): the popover is drawn in the display list by
+            // the walk; a global registration spawns a render-only xdg popup that swallows
+            // clicks on the open menu.
             self.ui_context.register_popover(&self.dropdown_view);
-            cce_ui::widget::popovers::register(&self.dropdown_view);
         }
 
         let size_changed = self.width != size.width as u32 || self.height != size.height as u32 || self.scale_factor != scale;
@@ -1113,8 +1121,6 @@ impl Application for GraphApp {
             self.width = size.width as u32;
             self.height = size.height as u32;
             self.scale_factor = scale;
-            
-            self.root_window.set_rect(0.0, 0.0, size.width, size.height);
             
             // Layout MenuBar at the top
             self.menu_bar.set_rect(0.0, 0.0, size.width, 42.0);
@@ -1145,10 +1151,37 @@ impl Application for GraphApp {
             self.ui_context.rebuild_spatial_grid();
         }
 
-        // 1. The widget tree walked into the list.
-        let root: *mut (dyn cce_ui::widget::Element + 'static) = self.root_window.as_ptr_mut();
+        // 1. The dissolved root Backplate's plate, then the top-level widgets walked in the
+        // old child order (menu bar, dropdown row, graph canvas, control panel on top).
         let mut pc = cce_ui::scene::paint::PaintCtx::new();
-        cce_ui::scene::painter::paint_root_into(&self.ui_context, root, &mut pc);
+        {
+            use cce_ui::scene::layout::Rect;
+            let mut plate_color = cce_ui::color::page_low_color();
+            if plate_color[3] > 0.001 {
+                plate_color[3] = cce_ui::color::active_backplate_opacity();
+            }
+            let rect = Rect { x: 0.0, y: 0.0, width: self.width as f32, height: self.height as f32 };
+            let radius = cce_ui::colors::backplate_corner_radius();
+            if radius > 0.1 {
+                pc.rounded_rect(rect, radius, (true, true, true, true), plate_color);
+            } else if plate_color[3] > 0.001 {
+                pc.quad(rect, plate_color);
+            }
+        }
+        {
+            let self_ptr = self as *mut Self;
+            let tops: [*mut (dyn cce_ui::widget::Element + 'static); 4] = unsafe {
+                [
+                    (*self_ptr).menu_bar.as_ptr_mut(),
+                    &mut (*self_ptr).menu_dropdown_bar as *mut Plate as *mut (dyn cce_ui::widget::Element + 'static),
+                    (*self_ptr).graph.as_ptr_mut(),
+                    &mut (*self_ptr).control_panel as *mut Plate as *mut (dyn cce_ui::widget::Element + 'static),
+                ]
+            };
+            for top in tops {
+                cce_ui::scene::painter::paint_root_into(&self.ui_context, top, &mut pc);
+            }
+        }
 
         // Draw foreground images in the graph grid (above nodes, fully opaque, preserving aspect ratio)
         let (grid_origin_x, grid_origin_y) = self.graph.grid_origin();
@@ -1226,10 +1259,6 @@ impl Application for GraphApp {
 
     fn display_list_text(&self) -> bool {
         true
-    }
-
-    fn render_popovers(&self, pc: &mut dyn cce_ui::layout::RenderTarget) {
-        cce_ui::layout::render_popovers(pc, &self.ui_context);
     }
 
     fn handle_pointer_move(&mut self, pos: LogicalPosition, needs_rebuild: &mut bool) {
