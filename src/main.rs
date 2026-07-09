@@ -1327,7 +1327,7 @@ impl Application for GraphApp {
         quads.extend(self.root_window.all_rounded_quads(&self.ui_context));
     }
 
-    fn display_list(&mut self) -> Option<cce_ui::scene::paint::DisplayList> {
+    fn display_list(&mut self, _size: cce_ui::engine::LogicalSize, _scale: f64) -> Option<cce_ui::scene::paint::DisplayList> {
         // Phase 3: render the widget tree via the single paint path by default (scene::painter ->
         // one clipped DisplayList, drawn with GPU scissor). Set CCE_LEGACY_PAINT to fall back to
         // the legacy multi-path renderer.
