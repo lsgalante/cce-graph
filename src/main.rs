@@ -1,6 +1,6 @@
 use wayland_client::QueueHandle;
 use cce_ui::engine::{Application, EngineState, LogicalPosition, LogicalSize, WindowSettings};
-use cce_ui::widget::{Adapted, MouseButton, ElementState, MouseScrollDelta, KeyEvent, Element, Graph, GraphNode, MenuBar, GraphController, WidgetId, Dropdown, Plate, Label};
+use cce_ui::widget::{Adapted, MouseButton, ElementState, MouseScrollDelta, KeyEvent, Element, Graph, GraphNode, MenuBar, GraphController, WidgetId, Dropdown, Label};
 use image::GenericImageView;
 
 #[derive(Debug, Clone)]
@@ -54,7 +54,7 @@ struct GraphApp {
     dropdown_file: Adapted<Dropdown>,
     dropdown_edit: Adapted<Dropdown>,
     dropdown_view: Adapted<Dropdown>,
-    menu_dropdown_bar: Plate,
+
     graph: Adapted<Graph>,
     graph_id: WidgetId,
     needs_rebuild: bool,
@@ -73,7 +73,13 @@ struct GraphApp {
     drag_image_ox: f32,
     drag_image_oy: f32,
     selected_image_idx: Option<usize>,
-    control_panel: Plate,
+    // Dissolved control panel (was a draggable Plate): position + drag state live here;
+    // its plate is emitted as prims and the label is a standalone walked widget.
+    panel_x: f32,
+    panel_y: f32,
+    panel_dragging: bool,
+    panel_drag_ox: f32,
+    panel_drag_oy: f32,
     show_control_panel: bool,
     control_panel_label: cce_ui::widget::Adapted<cce_ui::widget::Label>,
 }
@@ -481,6 +487,58 @@ impl GraphApp {
         self.dropdown_view.options = get_view_options(self.show_grid, self.uniform_background, self.opacity, self.show_control_panel);
     }
 
+    /// The dissolved control panel's rect (fixed 210x160, app-tracked position).
+    fn panel_rect(&self) -> (f32, f32, f32, f32) {
+        (self.panel_x, self.panel_y, 210.0, 160.0)
+    }
+
+    fn panel_hit(&self, px: f32, py: f32) -> bool {
+        let (x, y, w, h) = self.panel_rect();
+        px >= x && px < x + w && py >= y && py < y + h
+    }
+
+    /// Replicates the dissolved Plate's centered-first-child placement for the label
+    /// (plate padding inset, centered, 50px nominal height on first placement).
+    fn position_panel_label(&mut self) {
+        let pad = cce_ui::layout::plate_padding();
+        let (px, py, pw, ph) = self.panel_rect();
+        let left_x = px + pad;
+        let available_w = (pw - 2.0 * pad).max(1.0);
+        let start_y = py + pad;
+        let available_h = (ph - 2.0 * pad).max(1.0);
+        let center_x = left_x + available_w / 2.0;
+        let center_y = start_y + available_h / 2.0;
+
+        let (_, _, lw, lh) = self.control_panel_label.rect();
+        let use_w = if lw > 0.0 { lw.min(available_w) } else { available_w };
+        let use_h = if lh > 0.0 { lh } else { 50.0 };
+        let cx = (center_x - use_w / 2.0).clamp(left_x, (left_x + available_w - use_w).max(left_x));
+        let cy = (center_y - use_h / 2.0).clamp(start_y, (start_y + available_h - use_h).max(start_y));
+        let cw = use_w.min(px + pw - pad - cx);
+        let ch = use_h.min(py + ph - pad - cy);
+        self.control_panel_label.set_rect(cx, cy, cw, ch);
+    }
+
+    /// The dissolved Plate's visual: config plate color (else page-low, with the drag tint),
+    /// plate opacity, negative-alpha blur flag, config border and corner radius.
+    fn panel_visual(&self) -> ([f32; 4], Option<([f32; 4], f32)>, f32) {
+        let mut c = if let Some(c) = cce_ui::colors::plate_color() {
+            c
+        } else if self.panel_dragging {
+            let b = cce_ui::colors::page_low_color();
+            [(b[0] + 0.10).min(1.0), (b[1] + 0.15).min(1.0), (b[2] + 0.12).min(1.0), b[3]]
+        } else {
+            cce_ui::colors::page_low_color()
+        };
+        c[3] *= cce_ui::layout::plate_opacity();
+        if cce_ui::colors::plate_blur() {
+            c[3] = -c[3].abs();
+        }
+        let border = cce_ui::colors::plate_border_color()
+            .map(|bc| (bc, cce_ui::colors::plate_border_thickness()));
+        (c, border, cce_ui::layout::plate_corner_radius())
+    }
+
     fn new_project(&mut self) {
         self.graph.set_nodes(&[]);
         self.loaded_images.clear();
@@ -770,29 +828,11 @@ impl Application for GraphApp {
         let graph_id = WidgetId(cce_ui::widget::NEXT_WIDGET_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
 
 
-        let mut control_panel = Plate::new(800.0, 50.0, 210.0, 160.0)
-            .with_draggable(true);
         let show_control_panel = false;
-        control_panel.visible = show_control_panel;
 
         let control_panel_label = Label::new("No Node Selected")
             .with_font_size(12.0)
             .with_color([204, 204, 221]);
-
-        // Transparent Plate that lays out the File/Edit/View dropdown row via the scene engine
-        // (Phase 2b). Pure layout container over the menu bar; the menu_bar draws the bar itself.
-        let menu_dropdown_bar = Plate::new(0.0, 0.0, 0.0, 0.0)
-            .with_color([0.0, 0.0, 0.0, 0.0])
-            .with_blur(false)
-            .with_draggable(false)
-            .with_engine_layout({
-                let mut s = cce_ui::scene::layout::Style::row()
-                    .gap(10.0)
-                    .main_align(cce_ui::scene::layout::MainAlign::Start)
-                    .cross_align(cce_ui::scene::layout::CrossAlign::Start);
-                s.padding = cce_ui::scene::layout::Edges { left: 10.0, right: 0.0, top: 8.0, bottom: 0.0 };
-                s
-            });
 
         let mut app = Self {
 
@@ -800,7 +840,6 @@ impl Application for GraphApp {
             dropdown_file,
             dropdown_edit,
             dropdown_view,
-            menu_dropdown_bar,
             graph,
             graph_id,
             needs_rebuild: true,
@@ -819,7 +858,11 @@ impl Application for GraphApp {
             drag_image_ox: 0.0,
             drag_image_oy: 0.0,
             selected_image_idx: None,
-            control_panel,
+            panel_x: 800.0,
+            panel_y: 50.0,
+            panel_dragging: false,
+            panel_drag_ox: 0.0,
+            panel_drag_oy: 0.0,
             show_control_panel,
             control_panel_label,
         };
@@ -974,7 +1017,6 @@ impl Application for GraphApp {
             }
             AppMessage::ToggleControlPanel => {
                 self.show_control_panel = !self.show_control_panel;
-                self.control_panel.visible = self.show_control_panel;
                 self.update_view_options();
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
@@ -1038,15 +1080,8 @@ impl Application for GraphApp {
                 self.ui_context.register_widget(self.dropdown_file.base().unwrap().id(), (*self_ptr).dropdown_file.as_ptr_mut());
                 self.ui_context.register_widget(self.dropdown_edit.base().unwrap().id(), (*self_ptr).dropdown_edit.as_ptr_mut());
                 self.ui_context.register_widget(self.dropdown_view.base().unwrap().id(), (*self_ptr).dropdown_view.as_ptr_mut());
-                self.ui_context.register_widget(self.menu_dropdown_bar.base().unwrap().id(), &mut (*self_ptr).menu_dropdown_bar as *mut Plate as *mut (dyn Element + 'static));
                 self.ui_context.register_widget(self.graph_id, (*self_ptr).graph.as_ptr_mut());
-                self.ui_context.register_widget(self.control_panel.base().unwrap().id(), &mut (*self_ptr).control_panel as *mut Plate as *mut (dyn Element + 'static));
                 self.ui_context.register_widget(self.control_panel_label.base().unwrap().id(), (*self_ptr).control_panel_label.as_ptr_mut());
-
-                self.menu_dropdown_bar.add_child(self.dropdown_file.as_ptr_mut(), &mut self.ui_context);
-                self.menu_dropdown_bar.add_child(self.dropdown_edit.as_ptr_mut(), &mut self.ui_context);
-                self.menu_dropdown_bar.add_child(self.dropdown_view.as_ptr_mut(), &mut self.ui_context);
-                self.control_panel.add_child(self.control_panel_label.as_ptr_mut(), &mut self.ui_context);
             }
             self.widgets_registered = true;
         }
@@ -1125,26 +1160,34 @@ impl Application for GraphApp {
             // Layout MenuBar at the top
             self.menu_bar.set_rect(0.0, 0.0, size.width, 42.0);
             
-            // Phase 2b: lay out the File/Edit/View dropdown row via the scene layout engine; the
-            // dropdowns size to their labels (Dropdown::intrinsic_size) instead of fixed 70px.
-            let menu_bar_ptr: *mut (dyn cce_ui::widget::Element + 'static) =
-                &mut self.menu_dropdown_bar as *mut _;
-            cce_ui::scene::bridge::layout_subtree(
-                &self.ui_context,
-                menu_bar_ptr,
-                cce_ui::scene::layout::Rect { x: 0.0, y: 0.0, width: size.width, height: 42.0 },
-            );
-            
+            // The File/Edit/View dropdown row, laid out directly (the transparent layout
+            // Plate is DISSOLVED): a row at x=10/y=8 with 10px gaps, each dropdown sized
+            // to its label via measure (the same intrinsic sizes the scene solver used).
+            {
+                let mut x = 10.0;
+                let self_ptr = self as *mut Self;
+                let dds: [&mut cce_ui::widget::Adapted<Dropdown>; 3] = unsafe {
+                    [&mut (*self_ptr).dropdown_file, &mut (*self_ptr).dropdown_edit, &mut (*self_ptr).dropdown_view]
+                };
+                for dd in dds {
+                    // Same sizing entry the scene bridge used: the dropdown's intrinsic size
+                    // (widest option x configured dropdown height).
+                    let sz = cce_ui::widget::Element::intrinsic_size(&*dd)
+                        .unwrap_or(cce_ui::scene::layout::Size::new(70.0, 26.0));
+                    dd.set_rect(x, 8.0, sz.width, sz.height);
+                    x += sz.width + 10.0;
+                }
+            }
+
             // Layout Graph below MenuBar
             self.graph.set_rect(0.0, 42.0, size.width, size.height - 42.0);
 
-            // Initial control panel positioning and bounds settings
+            // Initial control panel positioning (bounds are clamped at drag time)
             if size_changed || is_first_layout {
-                let cpx = (size.width - 230.0).max(10.0);
-                let cpy = 55.0; // Float below MenuBar
-                self.control_panel.set_rect(cpx, cpy, 210.0, 160.0);
+                self.panel_x = (size.width - 230.0).max(10.0);
+                self.panel_y = 55.0; // Float below MenuBar
             }
-            self.control_panel.set_bounds(0.0, 42.0, size.width, size.height - 42.0);
+            self.position_panel_label();
             
             self.needs_rebuild = false;
 
@@ -1170,17 +1213,39 @@ impl Application for GraphApp {
         }
         {
             let self_ptr = self as *mut Self;
-            let tops: [*mut (dyn cce_ui::widget::Element + 'static); 4] = unsafe {
+            let tops: [*mut (dyn cce_ui::widget::Element + 'static); 5] = unsafe {
                 [
                     (*self_ptr).menu_bar.as_ptr_mut(),
-                    &mut (*self_ptr).menu_dropdown_bar as *mut Plate as *mut (dyn cce_ui::widget::Element + 'static),
+                    (*self_ptr).dropdown_file.as_ptr_mut(),
+                    (*self_ptr).dropdown_edit.as_ptr_mut(),
+                    (*self_ptr).dropdown_view.as_ptr_mut(),
                     (*self_ptr).graph.as_ptr_mut(),
-                    &mut (*self_ptr).control_panel as *mut Plate as *mut (dyn cce_ui::widget::Element + 'static),
                 ]
             };
             for top in tops {
                 cce_ui::scene::painter::paint_root_into(&self.ui_context, top, &mut pc);
             }
+        }
+
+        // The dissolved control panel, on top: its plate as prims, then the label walked.
+        if self.show_control_panel {
+            use cce_ui::scene::layout::Rect;
+            let (px, py, pw, ph) = self.panel_rect();
+            let rect = Rect { x: px, y: py, width: pw, height: ph };
+            let (fill, border, radius) = self.panel_visual();
+            let radii = (radius, radius, radius, radius);
+            if let Some((bc, thickness)) = border {
+                pc.border(rect, radii, fill, bc, thickness);
+            } else if fill[3].abs() > 0.001 {
+                if radius > 0.1 {
+                    pc.rounded_rect(rect, radius, (true, true, true, true), fill);
+                } else {
+                    pc.quad(rect, fill);
+                }
+            }
+            let label_ptr: *mut (dyn cce_ui::widget::Element + 'static) =
+                unsafe { (*(self as *mut Self)).control_panel_label.as_ptr_mut() };
+            cce_ui::scene::painter::paint_root_into(&self.ui_context, label_ptr, &mut pc);
         }
 
         // Draw foreground images in the graph grid (above nodes, fully opaque, preserving aspect ratio)
@@ -1276,12 +1341,22 @@ impl Application for GraphApp {
             if self.dropdown_view.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) { changed = true; }
         } else {
             let mut handled_by_panel = false;
-            if self.control_panel.visible {
-                if self.control_panel.is_dragging() || self.control_panel.hit_test(pos.x, pos.y, &self.ui_context) {
-                    if self.control_panel.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) { changed = true; }
+            if self.show_control_panel {
+                if self.panel_dragging {
+                    // Dissolved Plate drag: move within the graph area's bounds.
+                    let w = self.width as f32;
+                    let h = self.height as f32;
+                    let nx = (pos.x - self.panel_drag_ox).clamp(0.0, (w - 210.0).max(0.0));
+                    let ny = (pos.y - self.panel_drag_oy).clamp(42.0, (42.0 + (h - 42.0) - 160.0).max(42.0));
+                    if (nx - self.panel_x).abs() > 0.01 || (ny - self.panel_y).abs() > 0.01 {
+                        self.panel_x = nx;
+                        self.panel_y = ny;
+                        self.position_panel_label();
+                        changed = true;
+                    }
                     handled_by_panel = true;
-                } else {
-                    if self.control_panel.on_cursor_moved(-1000.0, -1000.0, &mut self.ui_context) { changed = true; }
+                } else if self.panel_hit(pos.x, pos.y) {
+                    handled_by_panel = true;
                 }
             }
 
@@ -1411,13 +1486,24 @@ impl Application for GraphApp {
             }
         } else {
             let mut handled_by_panel = false;
-            if self.control_panel.visible {
-                if self.control_panel.is_dragging() || self.control_panel.hit_test(pos.x, pos.y, &self.ui_context) {
-                    if self.control_panel.mouse_input(button, state, pos.x, pos.y, &mut self.ui_context) {
-                        changed = true;
+            if self.show_control_panel && (self.panel_dragging || self.panel_hit(pos.x, pos.y)) {
+                if button == MouseButton::Left {
+                    match state {
+                        ElementState::Pressed => {
+                            self.panel_dragging = true;
+                            self.panel_drag_ox = pos.x - self.panel_x;
+                            self.panel_drag_oy = pos.y - self.panel_y;
+                            changed = true;
+                        }
+                        ElementState::Released => {
+                            if self.panel_dragging {
+                                self.panel_dragging = false;
+                                changed = true;
+                            }
+                        }
                     }
-                    handled_by_panel = true;
                 }
+                handled_by_panel = true;
             }
 
             if !handled_by_panel {
