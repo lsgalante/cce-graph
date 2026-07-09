@@ -1,7 +1,6 @@
 use wayland_client::QueueHandle;
-use glyphon::{FontSystem, Buffer, Metrics, Attrs};
 use cce_ui::engine::{Application, EngineState, LogicalPosition, LogicalSize, WindowSettings};
-use cce_ui::widget::{Adapted, MouseButton, ElementState, MouseScrollDelta, KeyEvent, TextItem, Element, Graph, GraphNode, MenuBar, GraphController, WidgetId, Dropdown, Backplate, Plate, Label};
+use cce_ui::widget::{Adapted, MouseButton, ElementState, MouseScrollDelta, KeyEvent, Element, Graph, GraphNode, MenuBar, GraphController, WidgetId, Dropdown, Backplate, Plate, Label};
 use image::GenericImageView;
 
 #[derive(Debug, Clone)]
@@ -59,8 +58,6 @@ struct GraphApp {
     menu_dropdown_bar: Plate,
     graph: Adapted<Graph>,
     graph_id: WidgetId,
-    text_items: Vec<TextItem>,
-    font_system: FontSystem,
     needs_rebuild: bool,
     width: u32,
     height: u32,
@@ -485,104 +482,6 @@ impl GraphApp {
         self.dropdown_view.options = get_view_options(self.show_grid, self.uniform_background, self.opacity, self.show_control_panel);
     }
 
-    fn add_element_labels(
-        element: &dyn Element,
-        ui_context: &cce_ui::context::UiContext,
-        font_system: &mut FontSystem,
-        text_items: &mut Vec<TextItem>,
-        scale: f32,
-    ) {
-        for (label, font_family, bounds) in element.text_labels_with_font_and_bounds(ui_context) {
-            let mut font_size = label.font_size;
-            let mut family_name = None;
-            if let Some(ref font_str) = font_family {
-                let (parsed_family, parsed_size) = cce_ui::layout::parse_font_string(font_str);
-                if let Some(ps) = parsed_size {
-                    font_size = ps;
-                }
-                family_name = Some(parsed_family);
-            }
-
-            let physical_size = font_size * scale;
-            let metrics = Metrics::new(physical_size, physical_size * 1.4);
-            let mut buf = Buffer::new(font_system, metrics);
-            let mut attrs = Attrs::new();
-            
-            let family_str = family_name.clone();
-            if let Some(ref family) = family_str {
-                let family_val = match family.as_str() {
-                    "monospace" => glyphon::Family::Name(cce_ui::layout::get_system_monospace_font()),
-                    "sans-serif" => glyphon::Family::SansSerif,
-                    "serif" => glyphon::Family::Serif,
-                    _ => glyphon::Family::Name(family),
-                };
-                attrs = attrs.family(family_val);
-            }
-            buf.set_text(font_system, &label.text, attrs, glyphon::Shaping::Advanced);
-            buf.shape_until_scroll(font_system, true);
-            text_items.push(TextItem {
-                buffer: buf,
-                x: label.x,
-                y: label.y,
-                color: glyphon::Color::rgb(label.color[0], label.color[1], label.color[2]),
-                bounds,
-            });
-        }
-    }
-
-    fn rebuild_text_items(&mut self) {
-        self.text_items.clear();
-        let scale = cce_ui::scale::scale_factor();
-        
-        // 1. Add Graph labels using our font-aware helper
-        Self::add_element_labels(
-            &self.graph,
-            &self.ui_context,
-            &mut self.font_system,
-            &mut self.text_items,
-            scale,
-        );
-        
-        // 2. Add MenuBar labels using our font-aware helper
-        Self::add_element_labels(
-            &self.menu_bar,
-            &self.ui_context,
-            &mut self.font_system,
-            &mut self.text_items,
-            scale,
-        );
-
-        // 3. Add Dropdown labels using our font-aware helper
-        Self::add_element_labels(
-            &self.dropdown_file,
-            &self.ui_context,
-            &mut self.font_system,
-            &mut self.text_items,
-            scale,
-        );
-        Self::add_element_labels(
-            &self.dropdown_edit,
-            &self.ui_context,
-            &mut self.font_system,
-            &mut self.text_items,
-            scale,
-        );
-        Self::add_element_labels(
-            &self.dropdown_view,
-            &self.ui_context,
-            &mut self.font_system,
-            &mut self.text_items,
-            scale,
-        );
-        Self::add_element_labels(
-            &self.control_panel,
-            &self.ui_context,
-            &mut self.font_system,
-            &mut self.text_items,
-            scale,
-        );
-    }
-
     fn new_project(&mut self) {
         self.graph.set_nodes(&[]);
         self.loaded_images.clear();
@@ -900,8 +799,6 @@ impl Application for GraphApp {
             menu_dropdown_bar,
             graph,
             graph_id,
-            text_items: Vec::new(),
-            font_system: cce_ui::create_font_system(),
             needs_rebuild: true,
             width: 1024,
             height: 768,
@@ -948,7 +845,6 @@ impl Application for GraphApp {
             }
         }
 
-        app.rebuild_text_items();
         app
     }
 
@@ -1118,7 +1014,11 @@ impl Application for GraphApp {
 
     fn tick(&mut self, _dt: f32, _needs_rebuild: &mut bool) {}
 
-    fn view(&mut self, quads: &mut Vec<(f32, f32, f32, f32, [f32; 4])>, size: LogicalSize, scale: f64) {
+    fn display_list(&mut self, size: LogicalSize, scale: f64) -> Option<cce_ui::scene::paint::DisplayList> {
+        // Phase 6 single paint path: setup/relayout (the old view() body), then the whole
+        // frame — the Backplate tree walked into one list plus the loaded images' pixel
+        // quads — is built here. Widget text comes from the paint walk (Graph's node names
+        // through its per-label hatch, the control panel via the 6i container-text fix).
         self.ui_context.clear_popovers();
         cce_ui::widget::popovers::clear();
 
@@ -1240,16 +1140,15 @@ impl Application for GraphApp {
             }
             self.control_panel.set_bounds(0.0, 42.0, size.width, size.height - 42.0);
             
-            self.rebuild_text_items();
             self.needs_rebuild = false;
 
             self.ui_context.rebuild_spatial_grid();
         }
 
-        // 1. Root window / child quads collected recursively (includes MenuBar background when flat, Graph extra quads, etc.)
-        quads.extend(self.root_window.all_quads(&self.ui_context));
-
-
+        // 1. The widget tree walked into the list.
+        let root: *mut (dyn cce_ui::widget::Element + 'static) = self.root_window.as_ptr_mut();
+        let mut pc = cce_ui::scene::paint::PaintCtx::new();
+        cce_ui::scene::painter::paint_root_into(&self.ui_context, root, &mut pc);
 
         // Draw foreground images in the graph grid (above nodes, fully opaque, preserving aspect ratio)
         let (grid_origin_x, grid_origin_y) = self.graph.grid_origin();
@@ -1265,7 +1164,7 @@ impl Application for GraphApp {
         let max_x = graph_x + graph_w;
         let max_y = graph_y + graph_h;
 
-        let push_clipped = |qx: f32, qy: f32, qw: f32, qh: f32, qc: [f32; 4], q: &mut Vec<(f32, f32, f32, f32, [f32; 4])>| {
+        let push_clipped = |qx: f32, qy: f32, qw: f32, qh: f32, qc: [f32; 4], q: &mut cce_ui::scene::paint::PaintCtx| {
             let rx1 = qx.max(min_x);
             let ry1 = qy.max(min_y);
             let rx2 = (qx + qw).min(max_x);
@@ -1273,7 +1172,7 @@ impl Application for GraphApp {
             let rw = rx2 - rx1;
             let rh = ry2 - ry1;
             if rw > 0.0 && rh > 0.0 {
-                q.push((rx1, ry1, rw, rh, qc));
+                q.quad(cce_ui::scene::layout::Rect { x: rx1, y: ry1, width: rw, height: rh }, qc);
             }
         };
 
@@ -1303,7 +1202,7 @@ impl Application for GraphApp {
                     let px_x = screen_x + (x as f32) * px_w;
                     let px_y = screen_y + (y as f32) * px_h;
                     
-                    push_clipped(px_x, px_y, px_w + 0.5, px_h + 0.5, [r, g, b, a], quads);
+                    push_clipped(px_x, px_y, px_w + 0.5, px_h + 0.5, [r, g, b, a], &mut pc);
                 }
             }
 
@@ -1312,34 +1211,21 @@ impl Application for GraphApp {
                 let border_color = [0.0, 0.75, 1.0, 1.0]; // Vibrant cyan selection outline
                 
                 // Top border
-                push_clipped(screen_x - border_thickness, screen_y - border_thickness, screen_w + 2.0 * border_thickness, border_thickness, border_color, quads);
+                push_clipped(screen_x - border_thickness, screen_y - border_thickness, screen_w + 2.0 * border_thickness, border_thickness, border_color, &mut pc);
                 // Bottom border
-                push_clipped(screen_x - border_thickness, screen_y + screen_h, screen_w + 2.0 * border_thickness, border_thickness, border_color, quads);
+                push_clipped(screen_x - border_thickness, screen_y + screen_h, screen_w + 2.0 * border_thickness, border_thickness, border_color, &mut pc);
                 // Left border
-                push_clipped(screen_x - border_thickness, screen_y, border_thickness, screen_h, border_color, quads);
+                push_clipped(screen_x - border_thickness, screen_y, border_thickness, screen_h, border_color, &mut pc);
                 // Right border
-                push_clipped(screen_x + screen_w, screen_y, border_thickness, screen_h, border_color, quads);
+                push_clipped(screen_x + screen_w, screen_y, border_thickness, screen_h, border_color, &mut pc);
             }
         }
+
+        Some(pc.finish())
     }
 
-    fn view_rounded_quads(&mut self, quads: &mut Vec<(f32, f32, f32, f32, f32, [f32; 4], (bool, bool, bool, bool))>, _size: LogicalSize, _scale: f64) {
-        quads.extend(self.root_window.all_rounded_quads(&self.ui_context));
-    }
-
-    fn display_list(&mut self, _size: cce_ui::engine::LogicalSize, _scale: f64) -> Option<cce_ui::scene::paint::DisplayList> {
-        // Phase 3: render the widget tree via the single paint path by default (scene::painter ->
-        // one clipped DisplayList, drawn with GPU scissor). Set CCE_LEGACY_PAINT to fall back to
-        // the legacy multi-path renderer.
-        if std::env::var("CCE_LEGACY_PAINT").is_ok() {
-            return None;
-        }
-        let root: *mut (dyn cce_ui::widget::Element + 'static) = self.root_window.as_ptr_mut();
-        Some(cce_ui::scene::painter::paint_tree(&self.ui_context, root))
-    }
-
-    fn text_items(&self) -> &[TextItem] {
-        &self.text_items
+    fn display_list_text(&self) -> bool {
+        true
     }
 
     fn render_popovers(&self, pc: &mut dyn cce_ui::layout::RenderTarget) {
