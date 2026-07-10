@@ -1066,7 +1066,6 @@ impl Application for GraphApp {
         // quads — is built here. Widget text comes from the paint walk (Graph's node names
         // through its per-label hatch, the control panel via the 6i container-text fix).
         self.ui_context.clear_popovers();
-        cce_ui::widget::popovers::clear();
 
         let is_first_layout = !self.widgets_registered;
         if !self.widgets_registered {
