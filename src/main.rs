@@ -1135,19 +1135,19 @@ impl Application for GraphApp {
             // ui_context ONLY (the 6l pattern): the popover is drawn in the display list by
             // the walk; a global registration spawns a render-only xdg popup that swallows
             // clicks on the open menu.
-            self.ui_context.register_popover(&self.dropdown_file);
+            self.ui_context.register_popover(&mut self.dropdown_file);
         }
         if self.dropdown_edit.popover_rect().is_some() {
             // ui_context ONLY (the 6l pattern): the popover is drawn in the display list by
             // the walk; a global registration spawns a render-only xdg popup that swallows
             // clicks on the open menu.
-            self.ui_context.register_popover(&self.dropdown_edit);
+            self.ui_context.register_popover(&mut self.dropdown_edit);
         }
         if self.dropdown_view.popover_rect().is_some() {
             // ui_context ONLY (the 6l pattern): the popover is drawn in the display list by
             // the walk; a global registration spawns a render-only xdg popup that swallows
             // clicks on the open menu.
-            self.ui_context.register_popover(&self.dropdown_view);
+            self.ui_context.register_popover(&mut self.dropdown_view);
         }
 
         let size_changed = self.width != size.width as u32 || self.height != size.height as u32 || self.scale_factor != scale;
