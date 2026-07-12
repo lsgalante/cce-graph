@@ -1169,9 +1169,9 @@ impl Application for GraphApp {
                     [&mut (*self_ptr).dropdown_file, &mut (*self_ptr).dropdown_edit, &mut (*self_ptr).dropdown_view]
                 };
                 for dd in dds {
-                    // Same sizing entry the scene bridge used: the dropdown's intrinsic size
-                    // (widest option x configured dropdown height).
-                    let sz = cce_ui::widget::Element::intrinsic_size(&*dd)
+                    // Same sizing rule the retired scene bridge used: the dropdown's intrinsic
+                    // size (widest option x configured dropdown height).
+                    let sz = dd.intrinsic_size()
                         .unwrap_or(cce_ui::scene::layout::Size::new(70.0, 26.0));
                     dd.set_rect(x, 8.0, sz.width, sz.height);
                     x += sz.width + 10.0;
