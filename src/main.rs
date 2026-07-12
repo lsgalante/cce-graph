@@ -1076,11 +1076,11 @@ impl Application for GraphApp {
                 let self_ptr = self as *mut Self;
 
                 self.ui_context.register_widget(self.menu_bar.id(), (*self_ptr).menu_bar.as_ptr_mut());
-                self.ui_context.register_widget(self.dropdown_file.base().unwrap().id(), (*self_ptr).dropdown_file.as_ptr_mut());
-                self.ui_context.register_widget(self.dropdown_edit.base().unwrap().id(), (*self_ptr).dropdown_edit.as_ptr_mut());
-                self.ui_context.register_widget(self.dropdown_view.base().unwrap().id(), (*self_ptr).dropdown_view.as_ptr_mut());
+                self.ui_context.register_widget(self.dropdown_file.base().id(), (*self_ptr).dropdown_file.as_ptr_mut());
+                self.ui_context.register_widget(self.dropdown_edit.base().id(), (*self_ptr).dropdown_edit.as_ptr_mut());
+                self.ui_context.register_widget(self.dropdown_view.base().id(), (*self_ptr).dropdown_view.as_ptr_mut());
                 self.ui_context.register_widget(self.graph_id, (*self_ptr).graph.as_ptr_mut());
-                self.ui_context.register_widget(self.control_panel_label.base().unwrap().id(), (*self_ptr).control_panel_label.as_ptr_mut());
+                self.ui_context.register_widget(self.control_panel_label.base().id(), (*self_ptr).control_panel_label.as_ptr_mut());
             }
             self.widgets_registered = true;
         }
@@ -1123,7 +1123,7 @@ impl Application for GraphApp {
         };
 
         let text_changed = {
-            let current_text = self.control_panel_label.base().and_then(|b| b.label.as_ref());
+            let current_text = self.control_panel_label.base().label.as_ref();
             current_text != Some(&label_text)
         };
         if text_changed {
