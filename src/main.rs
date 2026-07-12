@@ -1,6 +1,6 @@
 use wayland_client::QueueHandle;
 use cce_ui::engine::{Application, EngineState, LogicalPosition, LogicalSize, WindowSettings};
-use cce_ui::widget::{Adapted, MouseButton, ElementState, MouseScrollDelta, KeyEvent, Element, Graph, GraphNode, MenuBar, GraphController, WidgetId, Dropdown, Label};
+use cce_ui::widget::{Adapted, MouseButton, ElementState, MouseScrollDelta, KeyEvent, WidgetHost, Graph, GraphNode, MenuBar, GraphController, WidgetId, Dropdown, Label};
 use image::GenericImageView;
 
 #[derive(Debug, Clone)]
@@ -1212,7 +1212,7 @@ impl Application for GraphApp {
         }
         {
             let self_ptr = self as *mut Self;
-            let tops: [*mut (dyn cce_ui::widget::Element + 'static); 5] = unsafe {
+            let tops: [*mut (dyn cce_ui::widget::WidgetHost + 'static); 5] = unsafe {
                 [
                     (*self_ptr).menu_bar.as_ptr_mut(),
                     (*self_ptr).dropdown_file.as_ptr_mut(),
@@ -1242,7 +1242,7 @@ impl Application for GraphApp {
                     pc.quad(rect, fill);
                 }
             }
-            let label_ptr: *mut (dyn cce_ui::widget::Element + 'static) =
+            let label_ptr: *mut (dyn cce_ui::widget::WidgetHost + 'static) =
                 unsafe { (*(self as *mut Self)).control_panel_label.as_ptr_mut() };
             cce_ui::scene::painter::paint_root_into(&self.ui_context, label_ptr, &mut pc);
         }
