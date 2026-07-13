@@ -1211,16 +1211,14 @@ impl Application for GraphApp {
             }
         }
         {
-            let self_ptr = self as *mut Self;
-            let tops: [*mut (dyn cce_ui::widget::WidgetHost + 'static); 5] = unsafe {
-                [
-                    (*self_ptr).menu_bar.as_ptr_mut(),
-                    (*self_ptr).dropdown_file.as_ptr_mut(),
-                    (*self_ptr).dropdown_edit.as_ptr_mut(),
-                    (*self_ptr).dropdown_view.as_ptr_mut(),
-                    (*self_ptr).graph.as_ptr_mut(),
-                ]
-            };
+            // The walk takes shared borrows now — no self-alias, no pointers.
+            let tops: [&dyn cce_ui::widget::WidgetHost; 5] = [
+                &self.menu_bar,
+                &self.dropdown_file,
+                &self.dropdown_edit,
+                &self.dropdown_view,
+                &self.graph,
+            ];
             for top in tops {
                 cce_ui::scene::painter::paint_root_into(&self.ui_context, top, &mut pc);
             }
@@ -1242,9 +1240,7 @@ impl Application for GraphApp {
                     pc.quad(rect, fill);
                 }
             }
-            let label_ptr: *mut (dyn cce_ui::widget::WidgetHost + 'static) =
-                unsafe { (*(self as *mut Self)).control_panel_label.as_ptr_mut() };
-            cce_ui::scene::painter::paint_root_into(&self.ui_context, label_ptr, &mut pc);
+            cce_ui::scene::painter::paint_root_into(&self.ui_context, &self.control_panel_label, &mut pc);
         }
 
         // Draw foreground images in the graph grid (above nodes, fully opaque, preserving aspect ratio)
