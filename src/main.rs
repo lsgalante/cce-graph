@@ -56,7 +56,6 @@ struct GraphApp {
     dropdown_view: Adapted<Dropdown>,
 
     graph: Adapted<Graph>,
-    graph_id: WidgetId,
     needs_rebuild: bool,
     width: u32,
     height: u32,
@@ -825,7 +824,6 @@ impl Application for GraphApp {
         )
         .with_custom_display_text("View");
 
-        let graph_id = WidgetId(cce_ui::widget::NEXT_WIDGET_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
 
 
         let show_control_panel = false;
@@ -841,7 +839,6 @@ impl Application for GraphApp {
             dropdown_edit,
             dropdown_view,
             graph,
-            graph_id,
             needs_rebuild: true,
             width: 1024,
             height: 768,
@@ -1079,7 +1076,10 @@ impl Application for GraphApp {
                 self.ui_context.register_widget(self.dropdown_file.base().id(), (*self_ptr).dropdown_file.as_ptr_mut());
                 self.ui_context.register_widget(self.dropdown_edit.base().id(), (*self_ptr).dropdown_edit.as_ptr_mut());
                 self.ui_context.register_widget(self.dropdown_view.base().id(), (*self_ptr).dropdown_view.as_ptr_mut());
-                self.ui_context.register_widget(self.graph_id, (*self_ptr).graph.as_ptr_mut());
+                // Registered under the widget's OWN base id (the id-rooted router resolves
+                // dispatch roots through the registry; the old synthetic `graph_id` key left
+                // `graph.id()` unresolvable — a latent hole the pointer router masked).
+                self.ui_context.register_widget(self.graph.id(), (*self_ptr).graph.as_ptr_mut());
                 self.ui_context.register_widget(self.control_panel_label.base().id(), (*self_ptr).control_panel_label.as_ptr_mut());
             }
             self.widgets_registered = true;
@@ -1338,9 +1338,9 @@ impl Application for GraphApp {
         // and loaded-image drags stay app-owned (they are not widgets).
         let mv = Event::PointerMove { x: pos.x, y: pos.y, local_x: pos.x, local_y: pos.y };
         if over_menu {
-            let dd_ptrs = [self.dropdown_file.as_ptr_mut(), self.dropdown_edit.as_ptr_mut(), self.dropdown_view.as_ptr_mut()];
-            for ptr in dd_ptrs {
-                if self.ui_context.propagate_event(&mv, ptr) { changed = true; }
+            let dd_roots = [self.dropdown_file.id(), self.dropdown_edit.id(), self.dropdown_view.id()];
+            for root in dd_roots {
+                if self.ui_context.propagate_event(&mv, root) { changed = true; }
             }
         } else {
             let mut handled_by_panel = false;
@@ -1393,7 +1393,7 @@ impl Application for GraphApp {
                     // The router forwards DragUpdate to a mid-drag node grab; a plain move
                     // runs the hover recompute. Node positions change without the propagate
                     // reporting it — rebuild every move while a drag is live.
-                    let g = self.graph.as_ptr_mut();
+                    let g = self.graph.id();
                     if self.ui_context.propagate_event(&mv, g) {
                         changed = true;
                     }
@@ -1403,14 +1403,14 @@ impl Application for GraphApp {
                 }
             } else {
                 let clear = Event::PointerMove { x: -1000.0, y: -1000.0, local_x: -1000.0, local_y: -1000.0 };
-                let g = self.graph.as_ptr_mut();
+                let g = self.graph.id();
                 if self.ui_context.propagate_event(&clear, g) { changed = true; }
             }
 
             // Clear hover states if cursor moved away
-            let dd_ptrs = [self.dropdown_file.as_ptr_mut(), self.dropdown_edit.as_ptr_mut(), self.dropdown_view.as_ptr_mut()];
-            for ptr in dd_ptrs {
-                if self.ui_context.propagate_event(&mv, ptr) { changed = true; }
+            let dd_roots = [self.dropdown_file.id(), self.dropdown_edit.id(), self.dropdown_view.id()];
+            for root in dd_roots {
+                if self.ui_context.propagate_event(&mv, root) { changed = true; }
             }
         }
 
@@ -1432,7 +1432,7 @@ impl Application for GraphApp {
 
         let ev = Event::MouseButton { button, state, x: pos.x, y: pos.y, local_x: pos.x, local_y: pos.y };
         if over_menu {
-            let dd_file = self.dropdown_file.as_ptr_mut();
+            let dd_file = self.dropdown_file.id();
             if self.ui_context.propagate_event(&ev, dd_file) {
                 changed = true;
                 if self.dropdown_file.take_change() {
@@ -1455,7 +1455,7 @@ impl Application for GraphApp {
                     self.dropdown_file.selected = 999;
                 }
             }
-            let dd_edit = self.dropdown_edit.as_ptr_mut();
+            let dd_edit = self.dropdown_edit.id();
             if self.ui_context.propagate_event(&ev, dd_edit) {
                 changed = true;
                 if self.dropdown_edit.take_change() {
@@ -1468,7 +1468,7 @@ impl Application for GraphApp {
                     self.dropdown_edit.selected = 999;
                 }
             }
-            let dd_view = self.dropdown_view.as_ptr_mut();
+            let dd_view = self.dropdown_view.id();
             if self.ui_context.propagate_event(&ev, dd_view) {
                 changed = true;
                 if self.dropdown_view.take_change() {
@@ -1526,7 +1526,7 @@ impl Application for GraphApp {
                         // Routed press: a node grab records the drag target; the router
                         // synthesizes DragStart past its threshold (the old immediate
                         // drag_begin call).
-                        let g = self.graph.as_ptr_mut();
+                        let g = self.graph.id();
                         if self.ui_context.propagate_event(&ev, g) {
                             self.selected_image_idx = None;
                             changed = true;
@@ -1560,7 +1560,7 @@ impl Application for GraphApp {
                             // The router delivers DragEnd (commit) before the release
                             // reaches Graph; a committed drag leaves the release arm inert.
                             let was_dragging = self.ui_context.is_dragging;
-                            let g = self.graph.as_ptr_mut();
+                            let g = self.graph.id();
                             if self.ui_context.propagate_event(&ev, g) || was_dragging {
                                 changed = true;
                             }
@@ -1580,7 +1580,7 @@ impl Application for GraphApp {
 
     fn handle_mouse_wheel(&mut self, delta: &MouseScrollDelta, pos: LogicalPosition, needs_rebuild: &mut bool) {
         let ev = Event::MouseWheel { delta: *delta, x: pos.x as f32, y: pos.y as f32, local_x: pos.x as f32, local_y: pos.y as f32 };
-        let g = self.graph.as_ptr_mut();
+        let g = self.graph.id();
         if self.ui_context.propagate_event(&ev, g) {
             *needs_rebuild = true;
             self.needs_rebuild = true;
