@@ -1,6 +1,6 @@
 use wayland_client::QueueHandle;
 use cce_ui::engine::{Application, EngineState, LogicalPosition, LogicalSize, WindowSettings};
-use cce_ui::widget::{Adapted, MouseButton, ElementState, MouseScrollDelta, KeyEvent, WidgetHost, Graph, GraphNode, MenuBar, GraphController, WidgetId, Dropdown, Label};
+use cce_ui::widget::{Adapted, MouseButton, ElementState, MouseScrollDelta, KeyEvent, WidgetHost, Event, Graph, GraphNode, MenuBar, GraphController, WidgetId, Dropdown, Label};
 use image::GenericImageView;
 
 #[derive(Debug, Clone)]
@@ -1334,10 +1334,14 @@ impl Application for GraphApp {
             || self.dropdown_view.hit_test(pos.x, pos.y, &self.ui_context)
             || self.menu_bar.hit_test(pos.x, pos.y, &self.ui_context);
 
+        // Routed dispatch (6bd shrink): one Event through the router per root; the panel
+        // and loaded-image drags stay app-owned (they are not widgets).
+        let mv = Event::PointerMove { x: pos.x, y: pos.y, local_x: pos.x, local_y: pos.y };
         if over_menu {
-            if self.dropdown_file.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) { changed = true; }
-            if self.dropdown_edit.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) { changed = true; }
-            if self.dropdown_view.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) { changed = true; }
+            let dd_ptrs = [self.dropdown_file.as_ptr_mut(), self.dropdown_edit.as_ptr_mut(), self.dropdown_view.as_ptr_mut()];
+            for ptr in dd_ptrs {
+                if self.ui_context.propagate_event(&mv, ptr) { changed = true; }
+            }
         } else {
             let mut handled_by_panel = false;
             if self.show_control_panel {
@@ -1361,11 +1365,7 @@ impl Application for GraphApp {
 
             if !handled_by_panel {
                 // Otherwise feed it to Graph
-                if self.graph.is_dragging() {
-                    if self.graph.drag_update(pos.x, pos.y) {
-                        changed = true;
-                    }
-                } else if let Some(img_idx) = self.dragging_image_idx {
+                if let Some(img_idx) = self.dragging_image_idx {
                     let (grid_origin_x, grid_origin_y) = self.graph.grid_origin();
                     let (grid_size_x, grid_size_y) = self.graph.grid_sizes();
                     let (skipped_row_h, skipped_col_w) = self.graph.skipped_sizes();
@@ -1390,18 +1390,28 @@ impl Application for GraphApp {
                         }
                     }
                 } else {
-                    if self.graph.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) {
+                    // The router forwards DragUpdate to a mid-drag node grab; a plain move
+                    // runs the hover recompute. Node positions change without the propagate
+                    // reporting it — rebuild every move while a drag is live.
+                    let g = self.graph.as_ptr_mut();
+                    if self.ui_context.propagate_event(&mv, g) {
+                        changed = true;
+                    }
+                    if self.ui_context.is_dragging {
                         changed = true;
                     }
                 }
             } else {
-                if self.graph.on_cursor_moved(-1000.0, -1000.0, &mut self.ui_context) { changed = true; }
+                let clear = Event::PointerMove { x: -1000.0, y: -1000.0, local_x: -1000.0, local_y: -1000.0 };
+                let g = self.graph.as_ptr_mut();
+                if self.ui_context.propagate_event(&clear, g) { changed = true; }
             }
-            
+
             // Clear hover states if cursor moved away
-            if self.dropdown_file.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) { changed = true; }
-            if self.dropdown_edit.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) { changed = true; }
-            if self.dropdown_view.on_cursor_moved(pos.x, pos.y, &mut self.ui_context) { changed = true; }
+            let dd_ptrs = [self.dropdown_file.as_ptr_mut(), self.dropdown_edit.as_ptr_mut(), self.dropdown_view.as_ptr_mut()];
+            for ptr in dd_ptrs {
+                if self.ui_context.propagate_event(&mv, ptr) { changed = true; }
+            }
         }
 
         if changed {
@@ -1420,8 +1430,10 @@ impl Application for GraphApp {
             || self.dropdown_view.hit_test(pos.x, pos.y, &self.ui_context)
             || self.menu_bar.hit_test(pos.x, pos.y, &self.ui_context);
 
+        let ev = Event::MouseButton { button, state, x: pos.x, y: pos.y, local_x: pos.x, local_y: pos.y };
         if over_menu {
-            if self.dropdown_file.mouse_input(button, state, pos.x, pos.y, &mut self.ui_context) {
+            let dd_file = self.dropdown_file.as_ptr_mut();
+            if self.ui_context.propagate_event(&ev, dd_file) {
                 changed = true;
                 if self.dropdown_file.take_change() {
                     let selected_idx = self.dropdown_file.selected;
@@ -1443,7 +1455,8 @@ impl Application for GraphApp {
                     self.dropdown_file.selected = 999;
                 }
             }
-            if self.dropdown_edit.mouse_input(button, state, pos.x, pos.y, &mut self.ui_context) {
+            let dd_edit = self.dropdown_edit.as_ptr_mut();
+            if self.ui_context.propagate_event(&ev, dd_edit) {
                 changed = true;
                 if self.dropdown_edit.take_change() {
                     let idx = self.dropdown_edit.selected;
@@ -1455,7 +1468,8 @@ impl Application for GraphApp {
                     self.dropdown_edit.selected = 999;
                 }
             }
-            if self.dropdown_view.mouse_input(button, state, pos.x, pos.y, &mut self.ui_context) {
+            let dd_view = self.dropdown_view.as_ptr_mut();
+            if self.ui_context.propagate_event(&ev, dd_view) {
                 changed = true;
                 if self.dropdown_view.take_change() {
                     let idx = self.dropdown_view.selected;
@@ -1509,10 +1523,11 @@ impl Application for GraphApp {
                 // Otherwise route to Graph
                 if button == MouseButton::Left {
                     if state == ElementState::Pressed {
-                        if self.graph.mouse_input(button, state, pos.x, pos.y, &mut self.ui_context) {
-                            if self.graph.is_dragging() {
-                                self.graph.drag_begin(pos.x, pos.y);
-                            }
+                        // Routed press: a node grab records the drag target; the router
+                        // synthesizes DragStart past its threshold (the old immediate
+                        // drag_begin call).
+                        let g = self.graph.as_ptr_mut();
+                        if self.ui_context.propagate_event(&ev, g) {
                             self.selected_image_idx = None;
                             changed = true;
                         } else if let Some(img_idx) = self.hit_test_image(pos.x, pos.y) {
@@ -1538,14 +1553,15 @@ impl Application for GraphApp {
                             changed = true;
                         }
                     } else if state == ElementState::Released {
-                        if self.graph.is_dragging() {
-                            self.graph.drag_end();
-                            changed = true;
-                        } else if self.dragging_image_idx.is_some() {
+                        if self.dragging_image_idx.is_some() {
                             self.dragging_image_idx = None;
                             changed = true;
                         } else {
-                            if self.graph.mouse_input(button, state, pos.x, pos.y, &mut self.ui_context) {
+                            // The router delivers DragEnd (commit) before the release
+                            // reaches Graph; a committed drag leaves the release arm inert.
+                            let was_dragging = self.ui_context.is_dragging;
+                            let g = self.graph.as_ptr_mut();
+                            if self.ui_context.propagate_event(&ev, g) || was_dragging {
                                 changed = true;
                             }
                         }
@@ -1563,7 +1579,9 @@ impl Application for GraphApp {
     }
 
     fn handle_mouse_wheel(&mut self, delta: &MouseScrollDelta, pos: LogicalPosition, needs_rebuild: &mut bool) {
-        if self.graph.mouse_wheel(delta, pos.x as f32, pos.y as f32, &mut self.ui_context) {
+        let ev = Event::MouseWheel { delta: *delta, x: pos.x as f32, y: pos.y as f32, local_x: pos.x as f32, local_y: pos.y as f32 };
+        let g = self.graph.as_ptr_mut();
+        if self.ui_context.propagate_event(&ev, g) {
             *needs_rebuild = true;
             self.needs_rebuild = true;
         }
