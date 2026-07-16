@@ -1585,7 +1585,9 @@ impl Application for GraphApp {
 
     fn handle_key_input(&mut self, event: &KeyEvent, needs_rebuild: &mut bool) -> Option<Self::Message> {
         if event.state == ElementState::Pressed {
-            let delete_keybind = cce_ui::layout::graph_node_delete();
+            // input.kdl `cce-graph.delete_node`, falling back to the legacy
+            // config.kdl graph `delete` prop.
+            let delete_keybind = cce_ui::input::app_chord("delete_node", &cce_ui::layout::graph_node_delete());
             if matches_keybind(event, &delete_keybind) {
                 self.delete_selected_node();
                 *needs_rebuild = true;
