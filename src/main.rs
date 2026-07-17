@@ -1314,6 +1314,55 @@ impl Application for GraphApp {
             }
         }
 
+        // Open dropdown popovers — geometry and labels last, on top of everything, exactly
+        // where they hit-test (the ui_context registration above is occlusion/routing only;
+        // nothing else paints them). Labels carry bounds equal to the popover rect, which
+        // clips them to the plate and exempts them from the dl-text occlusion clamp.
+        {
+            use cce_ui::scene::layout::Rect;
+            for &pop_id in &self.ui_context.active_popovers {
+                let Some(pop_ptr) = self.ui_context.tree.get_ptr(pop_id) else { continue };
+                let popover = unsafe { &*pop_ptr };
+                let Some((px, py, pw, ph)) = popover.popover_rect() else { continue };
+                let mut coll = cce_ui::layout::PopoverCollector::new();
+                popover.render_popover(&mut coll);
+                for &(c, x, y, qw, qh) in &coll.rects {
+                    pc.quad(Rect { x, y, width: qw, height: qh }, c);
+                }
+                let pop_bounds = Some([px, py, px + pw, py + ph]);
+                for (content, size, tx, ty, color, font, _bounds) in coll.texts {
+                    let color_u8 = [
+                        (color[0] * 255.0).clamp(0.0, 255.0) as u8,
+                        (color[1] * 255.0).clamp(0.0, 255.0) as u8,
+                        (color[2] * 255.0).clamp(0.0, 255.0) as u8,
+                    ];
+                    pc.text_with(content, tx, ty, size, color_u8, font, pop_bounds);
+                }
+            }
+            if cce_ui::widget::context_menu::is_visible() {
+                let menu_bounds = Some([
+                    cce_ui::widget::context_menu::x(),
+                    cce_ui::widget::context_menu::y(),
+                    cce_ui::widget::context_menu::x() + cce_ui::widget::context_menu::w(),
+                    cce_ui::widget::context_menu::y() + cce_ui::widget::context_menu::h(),
+                ]);
+                for (qx, qy, qw, qh, qc) in cce_ui::widget::context_menu::extra_quads() {
+                    pc.quad(Rect { x: qx, y: qy, width: qw, height: qh }, qc);
+                }
+                for label in cce_ui::widget::context_menu::text_labels() {
+                    pc.text_with(
+                        label.text.clone(),
+                        label.x,
+                        label.y,
+                        label.font_size,
+                        label.color,
+                        None,
+                        menu_bounds,
+                    );
+                }
+            }
+        }
+
         Some(pc.finish())
     }
 
@@ -1323,6 +1372,16 @@ impl Application for GraphApp {
 
     fn handle_pointer_move(&mut self, pos: LogicalPosition, needs_rebuild: &mut bool) {
         let mut changed = false;
+
+        // The global config context menu (right-click on a dropdown) gets the pointer
+        // exclusively while open — same priority the popovers get below.
+        if cce_ui::widget::context_menu::is_visible() {
+            if cce_ui::widget::context_menu::cursor_moved(pos.x, pos.y) {
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            }
+            return;
+        }
 
         let over_menu = self.dropdown_file.open || self.dropdown_edit.open || self.dropdown_view.open
             || self.dropdown_file.hit_test(pos.x, pos.y, &self.ui_context)
@@ -1419,6 +1478,16 @@ impl Application for GraphApp {
     fn handle_mouse_input(&mut self, button: MouseButton, state: ElementState, pos: LogicalPosition, needs_rebuild: &mut bool) -> Option<Self::Message> {
         let mut changed = false;
         let mut msg_out = None;
+
+        // An open config context menu swallows the click (select or dismiss) before any
+        // widget routing.
+        if cce_ui::widget::context_menu::is_visible() {
+            if cce_ui::widget::context_menu::mouse_input(button, state, pos.x, pos.y, Some(&mut self.ui_context)) {
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            }
+            return None;
+        }
 
         let over_menu = self.dropdown_file.open || self.dropdown_edit.open || self.dropdown_view.open
             || self.dropdown_file.hit_test(pos.x, pos.y, &self.ui_context)
@@ -1584,6 +1653,13 @@ impl Application for GraphApp {
     }
 
     fn handle_key_input(&mut self, event: &KeyEvent, needs_rebuild: &mut bool) -> Option<Self::Message> {
+        if event.state == ElementState::Pressed && cce_ui::widget::context_menu::is_visible() {
+            cce_ui::widget::context_menu::hide();
+            *needs_rebuild = true;
+            self.needs_rebuild = true;
+            return None;
+        }
+
         if event.state == ElementState::Pressed {
             // input.kdl `cce-graph.delete_node`, falling back to the legacy
             // config.kdl graph `delete` prop.
