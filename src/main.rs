@@ -94,35 +94,11 @@ fn ensure_default_project_file(path: &std::path::Path) -> Result<(), Box<dyn std
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let default_kdl = r#"name "default"
-show_grid true
-uniform_background false
-opacity 0.95
-
-node "Data Source" {
-    position 1.0 1.0
-    inputs 0
-    outputs 1
-    geom_visible true
-}
-
-node "Filter" {
-    position 3.0 1.0
-    inputs 1
-    outputs 1
-    geom_visible true
-    parameter "input" value="Data Source" type="string"
-}
-
-node "Render Output" {
-    position 5.0 2.0
-    inputs 1
-    outputs 1
-    geom_visible true
-    parameter "input" value="Filter" type="string"
-}
-"#;
-    std::fs::write(path, default_kdl)?;
+    // Seeded empty: an empty KDL document parses to exactly the loader's defaults
+    // (`name "default"`, `show_grid true`, `uniform_background false`, `opacity 0.95` — see
+    // `load_project_from_kdl_path`), so the app opens on a blank canvas. The file itself still has
+    // to exist, since loading reads it directly.
+    std::fs::write(path, "")?;
     Ok(())
 }
 
