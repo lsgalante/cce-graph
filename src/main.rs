@@ -1031,7 +1031,16 @@ impl Application for GraphApp {
         }
     }
 
-    fn tick(&mut self, _dt: f32, _needs_rebuild: &mut bool) {}
+    fn tick(&mut self, dt: f32, needs_rebuild: &mut bool) {
+        // Pump the widget tick walk: animating widgets (the menu dropdowns'
+        // expand/contract) register as tick receivers and report changed
+        // until their transition lands — without this a closing menu freezes
+        // fully open.
+        if self.ui_context.tick(dt) {
+            *needs_rebuild = true;
+            self.needs_rebuild = true;
+        }
+    }
 
     fn display_list(&mut self, size: LogicalSize, scale: f64) -> Option<cce_ui::scene::paint::DisplayList> {
         // Phase 6 single paint path: setup/relayout (the old view() body), then the whole
