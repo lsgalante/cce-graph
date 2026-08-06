@@ -1308,21 +1308,13 @@ impl Application for GraphApp {
             for &pop_id in &self.ui_context.active_popovers {
                 let Some(pop_ptr) = self.ui_context.tree.get_ptr(pop_id) else { continue };
                 let popover = unsafe { &*pop_ptr };
-                let Some((px, py, pw, ph)) = popover.popover_rect() else { continue };
-                let mut coll = cce_ui::layout::PopoverCollector::new();
-                popover.render_popover(&mut coll);
-                for &(c, x, y, qw, qh) in &coll.rects {
-                    pc.quad(Rect { x, y, width: qw, height: qh }, c);
+                if popover.popover_rect().is_none() {
+                    continue;
                 }
-                let pop_bounds = Some([px, py, px + pw, py + ph]);
-                for (content, size, tx, ty, color, font, _bounds) in coll.texts {
-                    let color_u8 = [
-                        (color[0] * 255.0).clamp(0.0, 255.0) as u8,
-                        (color[1] * 255.0).clamp(0.0, 255.0) as u8,
-                        (color[2] * 255.0).clamp(0.0, 255.0) as u8,
-                    ];
-                    pc.text_with(content, tx, ty, size, color_u8, font, pop_bounds);
-                }
+                // PaintCtx is a RenderTarget: the popover draws its real prims
+                // (the dropdown's expanded inset-plate surface) with its own
+                // per-label bounds — no flattening collector round-trip.
+                popover.render_popover(&mut pc);
             }
             if cce_ui::widget::context_menu::is_visible() {
                 let menu_bounds = Some([
