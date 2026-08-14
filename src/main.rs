@@ -1528,16 +1528,16 @@ impl Application for GraphApp {
                 }
             }
 
-            if state == ElementState::Pressed {
-                if !self.dropdown_file.hit_test(pos.x, pos.y, &self.ui_context) {
-                    self.dropdown_file.open = false;
-                }
-                if !self.dropdown_edit.hit_test(pos.x, pos.y, &self.ui_context) {
-                    self.dropdown_edit.open = false;
-                }
-                if !self.dropdown_view.hit_test(pos.x, pos.y, &self.ui_context) {
-                    self.dropdown_view.open = false;
-                }
+            // Outside-press dismissal. The engine already sweeps open popovers
+            // before app dispatch (close_popovers_missed_by_press), but only for
+            // Left — and Dropdown's own handler matches Left only too, so other
+            // buttons would leave an open menu stranded. Run the same sweep for
+            // those. Forcing `open = false` here instead (as this used to) skips
+            // the contract animation entirely: both `Paint::popover` and
+            // `draw_popover` gate on `open`, so the menu vanished in one frame
+            // while `closing` ran on invisibly.
+            if state == ElementState::Pressed && button != MouseButton::Left {
+                self.ui_context.close_popovers_missed_by_press(pos.x, pos.y);
             }
         } else {
             let mut handled_by_panel = false;
