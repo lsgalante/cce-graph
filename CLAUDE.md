@@ -9,10 +9,10 @@ environment: a grid-aligned canvas of connected nodes plus free-floating images,
 as KDL project directories. It is one crate of the multi-repo `cce` workspace (its own
 git repo side-by-side with its siblings; published read-only at
 `https://git.lucas.co/cce-graph.git` via the gitsite system — the local repo is the
-source of truth, there is no push remote). Read the
-workspace-level `../CLAUDE.md` first — workspace layout, the `cce-ui` toolkit, config
-conventions, and the multi-repo rules (each crate is its own git repo; commit here, not
-at the workspace root) all live there.
+source of truth, there is no push remote). Read the workspace-level
+`../cce-compositor/WORKSPACE.md` first — workspace layout, the `cce-ui` toolkit, config
+conventions, and the multi-repo rules (each crate is its own git repo; commit here, not at
+the workspace root) all live there.
 
 The entire app is **one file, `src/main.rs`**: a `GraphApp` struct implementing
 `cce-ui`'s `Application` trait, run via `cce_ui::engine::run::<GraphApp>()`. There are
