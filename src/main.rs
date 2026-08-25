@@ -1188,7 +1188,8 @@ impl Application for GraphApp {
                 plate_color[3] = cce_ui::color::root_plate_opacity();
             }
             let rect = Rect { x: 0.0, y: 0.0, width: self.width as f32, height: self.height as f32 };
-            let radius = cce_ui::colors::root_plate_corner_radius();
+            // Silhouette radius (cce-ui RFC 7b): matches the compositor clip.
+            let radius = cce_ui::layout::window_silhouette_radius();
             if radius > 0.1 {
                 pc.rounded_rect(rect, radius, (true, true, true, true), plate_color);
             } else if plate_color[3] > 0.001 {
