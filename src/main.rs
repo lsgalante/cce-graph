@@ -429,6 +429,63 @@ fn matches_keybind(event: &KeyEvent, keybind: &str) -> bool {
 }
 
 impl GraphApp {
+    /// Drain a consumed file-menu interaction into its message — shared by the
+    /// mouse path and the key path so a selection means the same thing however
+    /// it was made. Keeps the sentinel `selected = 999` protocol.
+    fn drain_file_menu(&mut self) -> Option<AppMessage> {
+        let mut msg = None;
+        if self.dropdown_file.take_change() {
+            let selected_idx = self.dropdown_file.selected;
+            if selected_idx < self.dropdown_file.options.len() {
+                let option_text = &self.dropdown_file.options[selected_idx];
+                match option_text.as_str() {
+                    "New" => msg = Some(AppMessage::New),
+                    "Open" | "Open..." => msg = Some(AppMessage::Open),
+                    "Save" => msg = Some(AppMessage::Save),
+                    "Save As" => msg = Some(AppMessage::SaveAs),
+                    "Exit" => msg = Some(AppMessage::Exit),
+                    "-" => {}
+                    _ => {
+                        let path = std::path::PathBuf::from(option_text);
+                        msg = Some(AppMessage::OpenRecent(path));
+                    }
+                }
+            }
+            self.dropdown_file.selected = 999;
+        }
+        msg
+    }
+
+    fn drain_edit_menu(&mut self) -> Option<AppMessage> {
+        let mut msg = None;
+        if self.dropdown_edit.take_change() {
+            match self.dropdown_edit.selected {
+                0 => msg = Some(AppMessage::AddNode),
+                1 => msg = Some(AppMessage::AddImage),
+                _ => {}
+            }
+            self.dropdown_edit.selected = 999;
+        }
+        msg
+    }
+
+    fn drain_view_menu(&mut self) -> Option<AppMessage> {
+        let mut msg = None;
+        if self.dropdown_view.take_change() {
+            match self.dropdown_view.selected {
+                0 => msg = Some(AppMessage::ToggleGrid),
+                1 => msg = Some(AppMessage::ToggleUniformBackground),
+                2 => msg = Some(AppMessage::SetOpacity95),
+                3 => msg = Some(AppMessage::SetOpacity75),
+                4 => msg = Some(AppMessage::SetOpacity50),
+                5 => msg = Some(AppMessage::ToggleControlPanel),
+                _ => {}
+            }
+            self.dropdown_view.selected = 999;
+        }
+        msg
+    }
+
     fn delete_selected_node(&mut self) {
         if let Some(idx) = self.graph.selected_node() {
             let mut nodes = self.graph.get_nodes();
@@ -1478,54 +1535,22 @@ impl Application for GraphApp {
             let dd_file = self.dropdown_file.id();
             if self.ui_context.propagate_event(&ev, dd_file) {
                 changed = true;
-                if self.dropdown_file.take_change() {
-                    let selected_idx = self.dropdown_file.selected;
-                    if selected_idx < self.dropdown_file.options.len() {
-                        let option_text = &self.dropdown_file.options[selected_idx];
-                        match option_text.as_str() {
-                            "New" => msg_out = Some(AppMessage::New),
-                            "Open" | "Open..." => msg_out = Some(AppMessage::Open),
-                            "Save" => msg_out = Some(AppMessage::Save),
-                            "Save As" => msg_out = Some(AppMessage::SaveAs),
-                            "Exit" => msg_out = Some(AppMessage::Exit),
-                            "-" => {}
-                            _ => {
-                                let path = std::path::PathBuf::from(option_text);
-                                msg_out = Some(AppMessage::OpenRecent(path));
-                            }
-                        }
-                    }
-                    self.dropdown_file.selected = 999;
+                if let Some(m) = self.drain_file_menu() {
+                    msg_out = Some(m);
                 }
             }
             let dd_edit = self.dropdown_edit.id();
             if self.ui_context.propagate_event(&ev, dd_edit) {
                 changed = true;
-                if self.dropdown_edit.take_change() {
-                    let idx = self.dropdown_edit.selected;
-                    match idx {
-                        0 => msg_out = Some(AppMessage::AddNode),
-                        1 => msg_out = Some(AppMessage::AddImage),
-                        _ => {}
-                    }
-                    self.dropdown_edit.selected = 999;
+                if let Some(m) = self.drain_edit_menu() {
+                    msg_out = Some(m);
                 }
             }
             let dd_view = self.dropdown_view.id();
             if self.ui_context.propagate_event(&ev, dd_view) {
                 changed = true;
-                if self.dropdown_view.take_change() {
-                    let idx = self.dropdown_view.selected;
-                    match idx {
-                        0 => msg_out = Some(AppMessage::ToggleGrid),
-                        1 => msg_out = Some(AppMessage::ToggleUniformBackground),
-                        2 => msg_out = Some(AppMessage::SetOpacity95),
-                        3 => msg_out = Some(AppMessage::SetOpacity75),
-                        4 => msg_out = Some(AppMessage::SetOpacity50),
-                        5 => msg_out = Some(AppMessage::ToggleControlPanel),
-                        _ => {}
-                    }
-                    self.dropdown_view.selected = 999;
+                if let Some(m) = self.drain_view_menu() {
+                    msg_out = Some(m);
                 }
             }
 
@@ -1636,6 +1661,30 @@ impl Application for GraphApp {
             *needs_rebuild = true;
             self.needs_rebuild = true;
             return None;
+        }
+
+        // An open menu dropdown takes the keyboard — Escape closes it, arrows
+        // move the hover, Enter selects — routed to the widget exactly like
+        // its mouse events above, drained through the same helpers. The
+        // widget has handled these keys itself since cce-ui's routed events;
+        // this app just never forwarded a key to it (the cce-files bug).
+        if self.dropdown_file.open || self.dropdown_edit.open || self.dropdown_view.open {
+            let kev = Event::KeyInput(event.clone());
+            let root = if self.dropdown_file.open {
+                self.dropdown_file.id()
+            } else if self.dropdown_edit.open {
+                self.dropdown_edit.id()
+            } else {
+                self.dropdown_view.id()
+            };
+            if self.ui_context.propagate_event(&kev, root) {
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+                return self
+                    .drain_file_menu()
+                    .or_else(|| self.drain_edit_menu())
+                    .or_else(|| self.drain_view_menu());
+            }
         }
 
         if event.state == ElementState::Pressed {
