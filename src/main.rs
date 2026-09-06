@@ -795,8 +795,8 @@ impl Application for GraphApp {
         Some(&self.ui_context)
     }
 
-    fn is_movable_backplate_at(&self, px: f32, py: f32) -> bool {
-        // Root Backplate dissolved (Phase 6m): the surface itself is the movable plate; drag
+    fn is_movable_root_plate_at(&self, px: f32, py: f32) -> bool {
+        // root plate container dissolved (Phase 6m): the surface itself is the movable plate; drag
         // anywhere a drag-blocking widget isn't.
         self.ui_context.drag_allowed_at(px, py)
     }
@@ -1108,7 +1108,7 @@ impl Application for GraphApp {
 
         let is_first_layout = !self.widgets_registered;
         if !self.widgets_registered {
-            // The root Backplate is DISSOLVED (Phase 6m recipe): top-level widgets register
+            // The root plate container is DISSOLVED (Phase 6m recipe): top-level widgets register
             // directly (parentless), the window plate is emitted below as prims, and the two
             // Plates keep their own children.
             unsafe {
@@ -1235,7 +1235,7 @@ impl Application for GraphApp {
             self.ui_context.rebuild_spatial_grid();
         }
 
-        // 1. The dissolved root Backplate's plate, then the top-level widgets walked in the
+        // 1. The dissolved root plate container's plate, then the top-level widgets walked in the
         // old child order (menu bar, dropdown row, graph canvas, control panel on top).
         let mut pc = cce_ui::scene::paint::PaintCtx::new();
         {

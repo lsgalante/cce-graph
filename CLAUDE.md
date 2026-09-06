@@ -65,7 +65,7 @@ numbers, e.g. "6l pattern", "6m recipe", document them deliberately):
   widgets are walked with `paint_root_into` (shared borrows), and finally the control
   panel and images are drawn on top. There is no `view()`; text renders from the
   paint walk (`display_list_text()` returns true).
-- **No Backplate/Plate containers**: top-level widgets register **parentless** in
+- **No root-plate/Plate containers**: top-level widgets register **parentless** in
   `UiContext` (one-time `register_widget` block guarded by `widgets_registered`,
   using raw pointers — the widgets must stay owned fields of `GraphApp` so those
   pointers stay valid). The former control-panel Plate is "dissolved": its rect,
