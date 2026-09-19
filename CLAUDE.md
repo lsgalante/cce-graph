@@ -27,7 +27,7 @@ node/image.
 ```sh
 cargo build -p cce-graph        # from the workspace root (shared ../target/)
 cargo run -p cce-graph          # optionally pass a project path as the first arg
-make install                    # release build + copy ../target/release/cce-graph to ~/.local/bin
+make install                    # release build, then `ccebuild install --no-build cce-graph`
 ```
 
 Building from inside this directory also works (standalone clone case). `cargo run`
