@@ -7,9 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `cce-graph` is a node-graph / mood-board editor client for the CCE Wayland desktop
 environment: a grid-aligned canvas of connected nodes plus free-floating images, saved
 as KDL project directories. It is one crate of the multi-repo `cce` workspace (its own
-git repo side-by-side with its siblings; published read-only at
-`https://git.lucas.co/cce-graph.git` via the gitsite system — the local repo is the
-source of truth, there is no push remote). Read the workspace-level
+git repo side-by-side with its siblings; `origin` is the local *bare* repo
+`~/git/cce-graph.git`, so **committing is not publishing — `git push origin main` is**,
+after which the gitsite system mirrors it to `https://git.lucas.co/cce-graph.git`, the
+old fetch-only static mirror now kept as the `published` remote). Read the workspace-level
 `../cce-compositor/WORKSPACE.md` first — workspace layout, the `cce-ui` toolkit, config
 conventions, and the multi-repo rules (each crate is its own git repo; commit here, not at
 the workspace root) all live there.
