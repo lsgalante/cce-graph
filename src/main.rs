@@ -1238,21 +1238,8 @@ impl Application for GraphApp {
         // 1. The dissolved root plate container's plate, then the top-level widgets walked in the
         // old child order (menu bar, dropdown row, graph canvas, control panel on top).
         let mut pc = cce_ui::scene::paint::PaintCtx::new();
-        {
-            use cce_ui::scene::layout::Rect;
-            let mut plate_color = cce_ui::color::page_low_color();
-            if plate_color[3] > 0.001 {
-                plate_color[3] = cce_ui::color::root_plate_opacity();
-            }
-            let rect = Rect { x: 0.0, y: 0.0, width: self.width as f32, height: self.height as f32 };
-            // Silhouette radius (cce-ui RFC 7b): matches the compositor clip.
-            let radius = cce_ui::layout::window_silhouette_radius();
-            if radius > 0.1 {
-                pc.rounded_rect(rect, radius, (true, true, true, true), plate_color);
-            } else if plate_color[3] > 0.001 {
-                pc.quad(rect, plate_color);
-            }
-        }
+        // The standard root plate (cce-ui PlateSpec::window).
+        pc.root_plate(self.width as f32, self.height as f32);
         {
             // The walk takes shared borrows now — no self-alias, no pointers.
             let tops: [&dyn cce_ui::widget::WidgetHost; 5] = [
