@@ -13,7 +13,6 @@ enum AppMessage {
     SaveToPath(std::path::PathBuf),
     Exit,
     ToggleGrid,
-    ToggleUniformBackground,
     SetOpacity95,
     SetOpacity75,
     SetOpacity50,
@@ -36,7 +35,6 @@ struct GraphProjectState {
     nodes: Vec<GraphNode>,
     images: Vec<GraphProjectImage>,
     show_grid: bool,
-    uniform_background: bool,
     opacity: f32,
 }
 
@@ -61,7 +59,6 @@ struct GraphApp {
     height: u32,
     scale_factor: f64,
     show_grid: bool,
-    uniform_background: bool,
     opacity: f32,
     ui_context: cce_ui::context::UiContext,
     loaded_project_path: Option<std::path::PathBuf>,
@@ -95,7 +92,7 @@ fn ensure_default_project_file(path: &std::path::Path) -> Result<(), Box<dyn std
         std::fs::create_dir_all(parent)?;
     }
     // Seeded empty: an empty KDL document parses to exactly the loader's defaults
-    // (`name "default"`, `show_grid true`, `uniform_background false`, `opacity 0.95` — see
+    // (`name "default"`, `show_grid true`, `opacity 0.95` — see
     // `load_project_from_kdl_path`), so the app opens on a blank canvas. The file itself still has
     // to exist, since loading reads it directly.
     std::fs::write(path, "")?;
@@ -108,7 +105,6 @@ fn load_project_from_kdl_path(path: &std::path::Path) -> Result<GraphProjectStat
     
     let mut name = "default".to_string();
     let mut show_grid = true;
-    let mut uniform_background = false;
     let mut opacity = 0.95f32;
     let mut nodes = Vec::new();
     let mut images = Vec::new();
@@ -127,13 +123,6 @@ fn load_project_from_kdl_path(path: &std::path::Path) -> Result<GraphProjectStat
                 if let Some(entry) = node.entries().first() {
                     if let kdl::KdlValue::Bool(b) = entry.value() {
                         show_grid = *b;
-                    }
-                }
-            }
-            "uniform_background" => {
-                if let Some(entry) = node.entries().first() {
-                    if let kdl::KdlValue::Bool(b) = entry.value() {
-                        uniform_background = *b;
                     }
                 }
             }
@@ -315,7 +304,6 @@ fn load_project_from_kdl_path(path: &std::path::Path) -> Result<GraphProjectStat
         nodes,
         images,
         show_grid,
-        uniform_background,
         opacity,
     })
 }
@@ -324,7 +312,6 @@ fn save_project_to_kdl_path(path: &std::path::Path, state: &GraphProjectState) -
     let mut kdl = String::new();
     kdl.push_str(&format!("name {:?}\n", state.name));
     kdl.push_str(&format!("show_grid {}\n", state.show_grid));
-    kdl.push_str(&format!("uniform_background {}\n", state.uniform_background));
     kdl.push_str(&format!("opacity {}\n\n", state.opacity));
 
     for node in &state.nodes {
@@ -353,10 +340,9 @@ fn save_project_to_kdl_path(path: &std::path::Path, state: &GraphProjectState) -
     Ok(())
 }
 
-fn get_view_options(show_grid: bool, uniform_bg: bool, opacity: f32, show_panel: bool) -> Vec<String> {
+fn get_view_options(show_grid: bool, opacity: f32, show_panel: bool) -> Vec<String> {
     vec![
         format!("{} Show Grid", if show_grid { "✓" } else { "  " }),
-        format!("{} Uniform Background", if uniform_bg { "✓" } else { "  " }),
         format!("{} Opacity: 95%", if (opacity - 0.95).abs() < 0.05 { "✓" } else { "  " }),
         format!("{} Opacity: 75%", if (opacity - 0.75).abs() < 0.05 { "✓" } else { "  " }),
         format!("{} Opacity: 50%", if (opacity - 0.50).abs() < 0.05 { "✓" } else { "  " }),
@@ -474,11 +460,10 @@ impl GraphApp {
         if self.dropdown_view.take_change() {
             match self.dropdown_view.selected {
                 0 => msg = Some(AppMessage::ToggleGrid),
-                1 => msg = Some(AppMessage::ToggleUniformBackground),
-                2 => msg = Some(AppMessage::SetOpacity95),
-                3 => msg = Some(AppMessage::SetOpacity75),
-                4 => msg = Some(AppMessage::SetOpacity50),
-                5 => msg = Some(AppMessage::ToggleControlPanel),
+                1 => msg = Some(AppMessage::SetOpacity95),
+                2 => msg = Some(AppMessage::SetOpacity75),
+                3 => msg = Some(AppMessage::SetOpacity50),
+                4 => msg = Some(AppMessage::ToggleControlPanel),
                 _ => {}
             }
             self.dropdown_view.selected = 999;
@@ -516,7 +501,7 @@ impl GraphApp {
     }
 
     fn update_view_options(&mut self) {
-        self.dropdown_view.options = get_view_options(self.show_grid, self.uniform_background, self.opacity, self.show_control_panel);
+        self.dropdown_view.options = get_view_options(self.show_grid, self.opacity, self.show_control_panel);
     }
 
     /// The dissolved control panel's rect (fixed 210x160, app-tracked position).
@@ -604,7 +589,6 @@ impl GraphApp {
             nodes: self.graph.get_nodes(),
             images: project_images,
             show_grid: self.show_grid,
-            uniform_background: self.uniform_background,
             opacity: self.opacity,
         };
 
@@ -686,7 +670,6 @@ impl GraphApp {
 
         self.graph.set_nodes(&state.nodes);
         self.show_grid = state.show_grid;
-        self.uniform_background = state.uniform_background;
         self.opacity = state.opacity;
 
         // Load images
@@ -714,7 +697,6 @@ impl GraphApp {
 
         // Apply grid/background settings to self.graph
         self.graph.set_show_network_grid(self.show_grid);
-        self.graph.set_uniform_background(self.uniform_background);
         self.graph.set_network_opacity(self.opacity);
 
         // Update view dropdown options
@@ -808,7 +790,7 @@ impl Application for GraphApp {
     fn new(_qh: &QueueHandle<EngineState<Self>>, _sender: calloop::channel::Sender<Self::Message>) -> Self {
         let mut graph = Graph::new();
         
-        let (show_grid, snap_enabled, uniform_background, opacity, gap_width) = load_config();
+        let (show_grid, snap_enabled, opacity, gap_width) = load_config();
 
         // Configure initial grid settings on the graph
         graph.set_show_network_grid(show_grid);
@@ -816,7 +798,6 @@ impl Application for GraphApp {
         graph.set_skipped_sizes(gap_width, gap_width);
         graph.set_grid_origin(60.0, 60.0);
         graph.set_grid_snap_enabled(snap_enabled);
-        graph.set_uniform_background(uniform_background);
         graph.set_network_opacity(opacity);
 
         // Build Menu Bar with options to toggle new features
@@ -852,7 +833,7 @@ impl Application for GraphApp {
         .with_custom_display_text("Edit");
 
         let dropdown_view = Dropdown::new(
-            get_view_options(show_grid, uniform_background, opacity, false),
+            get_view_options(show_grid, opacity, false),
             999,
         )
         .with_custom_display_text("View");
@@ -877,7 +858,6 @@ impl Application for GraphApp {
             height: 768,
             scale_factor: 1.0,
             show_grid,
-            uniform_background,
             opacity,
             ui_context: cce_ui::context::UiContext::new(),
             loaded_project_path: None,
@@ -1010,14 +990,6 @@ impl Application for GraphApp {
                 self.graph.set_show_network_grid(self.show_grid);
                 self.update_view_options();
                 write_config_value("graph_show_grid", &self.show_grid.to_string());
-                *needs_rebuild = true;
-                self.needs_rebuild = true;
-            }
-            AppMessage::ToggleUniformBackground => {
-                self.uniform_background = !self.uniform_background;
-                self.graph.set_uniform_background(self.uniform_background);
-                self.update_view_options();
-                write_config_value("style.surface.graph.uniform_background", &self.uniform_background.to_string());
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }
@@ -1669,18 +1641,17 @@ impl Application for GraphApp {
     }
 }
 
-fn load_config() -> (bool, bool, bool, f32, f32) {
+fn load_config() -> (bool, bool, f32, f32) {
     let path = cce_ui::config::get_config_path();
     let content = std::fs::read_to_string(&path).unwrap_or_default();
     let val = cce_ui::config::parse_kdl_to_json(&content);
     
     let show_grid = val.pointer("/layout/graph_show_grid").and_then(|v| v.as_bool()).unwrap_or(true);
     let snap_enabled = val.pointer("/layout/graph_snap_enabled").and_then(|v| v.as_bool()).unwrap_or(true);
-    let uniform_background = val.pointer("/style/surface/graph/uniform_background").and_then(|v| v.as_bool()).unwrap_or(false);
     let opacity = val.pointer("/layout/graph_network_opacity").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(0.95);
     let gap_width = val.pointer("/layout/graph_gap_width").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(35.0);
     
-    (show_grid, snap_enabled, uniform_background, opacity, gap_width)
+    (show_grid, snap_enabled, opacity, gap_width)
 }
 
 fn write_config_value(key: &str, value: &str) -> bool {

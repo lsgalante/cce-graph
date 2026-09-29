@@ -41,14 +41,14 @@ needs a running Wayland session — ideally the `cce` compositor.
   `state.json` projects still load; saving writes `state.kdl` and deletes the old
   JSON.
 - The KDL schema is hand-rolled in `load_project_from_kdl_path` /
-  `save_project_to_kdl_path` (top-level `name`/`show_grid`/`uniform_background`/
-  `opacity`, then `node` and `image` blocks). Keep both functions in sync when
-  changing it.
+  `save_project_to_kdl_path` (top-level `name`/`show_grid`/`opacity`, then `node` and `image` blocks). Keep
+  both functions in sync when changing it. A `uniform_background` line in an
+  older save is ignored: the graph has had no fill of its own since 2026-09-29.
 - With no CLI arg, the app loads (creating if missing)
   `~/.config/cce/cce-graph/default.kdl` — a bare KDL state file, not a project dir.
 - View settings persist to the **shared** `~/.config/cce/config.kdl` under
   `layout` (`graph_show_grid`, `graph_snap_enabled`, `graph_network_opacity`,
-  `graph_gap_width`) and `style.surface.graph.uniform_background` — see
+  `graph_gap_width`) — see
   `load_config()` / `write_config_value()`.
 - The delete-node keybinding resolves through `input.kdl`'s `cce-graph.delete_node`
   (via `cce_ui::input::app_chord`), falling back to the legacy config.kdl value.
