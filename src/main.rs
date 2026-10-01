@@ -1,5 +1,7 @@
 use wayland_client::QueueHandle;
 use cce_ui::engine::{Application, EngineState, LogicalPosition, LogicalSize, WindowSettings};
+mod linkgraph;
+mod vault;
 mod wiring;
 
 use cce_ui::widget::{Adapted, MouseButton, ElementState, MouseScrollDelta, KeyEvent, WidgetHost, Event, Graph, GraphNode, MenuBar, GraphController, Dropdown, Label};
@@ -1679,5 +1681,12 @@ fn main() {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let _guard = rt.enter();
 
+    // `--vault` is the notes vault's link graph, a separate app; anything
+    // else is the project editor.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(v) = vault::Args::parse(&args) {
+        vault::run(v);
+        return;
+    }
     cce_ui::engine::run::<GraphApp>();
 }

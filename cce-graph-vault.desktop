@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Vault Graph
+Comment=The notes vault as a graph of links
+Exec=cce-graph --vault
+Icon=cce-graph
+Categories=Office;Utility;
+Terminal=false
+StartupNotify=true
+StartupWMClass=cce-graph-vault

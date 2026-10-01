@@ -22,6 +22,38 @@ here — this crate is orchestration: menu bar + File/Edit/View dropdowns, the `
 widget, an image overlay, and a floating "control panel" showing the selected
 node/image.
 
+## Vault mode (`cce-graph --vault`)
+
+A second, separate `Application` (`src/vault.rs`, model in
+`src/linkgraph.rs`): the notes vault as a link graph, milestone 4 of the
+Obsidian-on-cce plan. `main` runs it when the arguments carry `--vault`
+(`cce-graph --vault [DIR] [--local [NOTE]]`; DIR defaults to the vault in
+config.kdl, as cce-notes reads it). Nothing it does touches the project
+editor.
+
+- **Model:** a node per note plus a grey ghost per link target that does
+  not exist; one edge per linked pair. Built from `cce_vault::Index`, and
+  rebuilt on every watcher batch keeping positions and pins.
+- **Layout:** force-directed (repulsion through a spatial grid of
+  `REPULSE_RANGE` cells, springs, a centering pull), stepped in `tick`
+  while `alpha` cools; once settled the app goes idle. The camera fits
+  once the layout has spread and again when it settles, unless the user
+  has panned or zoomed.
+- **Local graph:** N hops (Depth chip, Ctrl+=/−) around the note open in
+  cce-notes, polled once a second as `current` on cce-notes' instance
+  socket (`idle_poll_interval` runs only in local mode). A click on a node
+  sends `open <abs path>` over that socket, or launches cce-notes.
+- **Single instance** on `/tmp/cce-graph-vault-<display>.sock`; a second
+  launch forwards `local [note]` / `global` and exits — cce-notes' Ctrl+G
+  relies on that.
+- **Filter box:** words match names, `#tag` / `tag:` tags (nested too),
+  `path:` paths. Drag pins a node, right-click unpins.
+- Labels fade in from zoom 1.1; the hovered node's neighbourhood is lit
+  and labelled whatever the zoom.
+
+`cargo test -p cce-graph` covers the model (build, ghosts, hops, the layout
+settling with links short, filters, hit-testing) and the editor's wiring.
+
 ## Build and run
 
 ```sh
