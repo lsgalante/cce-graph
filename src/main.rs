@@ -1,5 +1,7 @@
 use wayland_client::QueueHandle;
 use cce_ui::engine::{Application, EngineState, LogicalPosition, LogicalSize, WindowSettings};
+mod wiring;
+
 use cce_ui::widget::{Adapted, MouseButton, ElementState, MouseScrollDelta, KeyEvent, WidgetHost, Event, Graph, GraphNode, MenuBar, GraphController, Dropdown, Label};
 use image::GenericImageView;
 
@@ -668,7 +670,9 @@ impl GraphApp {
             serde_json::from_str(&content)?
         };
 
-        self.graph.set_nodes(&state.nodes);
+        let mut nodes = state.nodes.clone();
+        wiring::ensure_ids(&mut nodes);
+        self.graph.set_nodes(&nodes);
         self.show_grid = state.show_grid;
         self.opacity = state.opacity;
 
@@ -1036,6 +1040,7 @@ impl Application for GraphApp {
                     inputs: 1,
                     outputs: 1,
                 });
+                wiring::ensure_ids(&mut nodes);
                 self.graph.set_nodes(&nodes);
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
@@ -1538,6 +1543,16 @@ impl Application for GraphApp {
                         if self.ui_context.propagate_event(&ev, g) {
                             self.selected_image_idx = None;
                             changed = true;
+                            // A press on a port can complete a wire drawn
+                            // with the mouse; write it into the node.
+                            if let Some((to, from, port)) =
+                                GraphController::take_pending_connection_to_port(&mut *self.graph)
+                            {
+                                let mut nodes = self.graph.get_nodes();
+                                if wiring::connect(&mut nodes, &to, &from, port) {
+                                    self.graph.set_nodes(&nodes);
+                                }
+                            }
                         } else if let Some(img_idx) = self.hit_test_image(pos.x, pos.y) {
                             let img = &self.loaded_images[img_idx];
                             let (grid_origin_x, grid_origin_y) = self.graph.grid_origin();
