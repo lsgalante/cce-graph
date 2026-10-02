@@ -329,7 +329,7 @@ impl VaultApp {
 
     fn node_at(&self, s: (f32, f32)) -> Option<usize> {
         let area = self.metrics().area;
-        if !contains(area, s.0, s.1) {
+        if !area.contains(s.0, s.1) {
             return None;
         }
         let w = self.to_world(area, s);
@@ -510,9 +510,6 @@ impl VaultApp {
     }
 }
 
-fn contains(r: Rect, x: f32, y: f32) -> bool {
-    x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height
-}
 
 fn vault_name(root: &std::path::Path) -> String {
     root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
@@ -662,7 +659,7 @@ impl Application for VaultApp {
 
     fn cursor_icon(&self, x: f32, y: f32) -> Option<CursorIcon> {
         let m = self.metrics();
-        if contains(m.filter, x, y) {
+        if m.filter.contains(x, y) {
             return Some(CursorIcon::Text);
         }
         match self.drag {
@@ -734,7 +731,7 @@ impl Application for VaultApp {
         let ev = Event::MouseButton { button, state, x: s.0, y: s.1, local_x: s.0, local_y: s.1 };
         let pressed = state == ElementState::Pressed;
 
-        if contains(m.filter, s.0, s.1) {
+        if m.filter.contains(s.0, s.1) {
             if pressed && !self.filter_input.editing {
                 self.ui_context.set_focused(&mut self.filter_input);
                 WidgetHost::focus(&mut self.filter_input);
@@ -746,22 +743,22 @@ impl Application for VaultApp {
             self.filter_input.unfocus();
         }
         if pressed && button == MouseButton::Left {
-            if contains(m.global_chip, s.0, s.1) {
+            if m.global_chip.contains(s.0, s.1) {
                 self.set_mode(false, None);
                 return None;
             }
-            if contains(m.local_chip, s.0, s.1) {
+            if m.local_chip.contains(s.0, s.1) {
                 self.set_mode(true, None);
                 return None;
             }
-            if self.local && contains(m.depth_chip, s.0, s.1) {
+            if self.local && m.depth_chip.contains(s.0, s.1) {
                 self.depth = self.depth % 4 + 1;
                 self.recompute_visible();
                 self.fit_pending = true;
                 return None;
             }
         }
-        if !contains(m.area, s.0, s.1) && pressed {
+        if !m.area.contains(s.0, s.1) && pressed {
             return None;
         }
         match (button, state) {
@@ -792,7 +789,7 @@ impl Application for VaultApp {
 
     fn handle_mouse_wheel(&mut self, delta: &MouseScrollDelta, pos: LogicalPosition, needs_rebuild: &mut bool) {
         let s = (pos.x as f32, pos.y as f32);
-        if !contains(self.metrics().area, s.0, s.1) {
+        if !self.metrics().area.contains(s.0, s.1) {
             return;
         }
         match delta {
