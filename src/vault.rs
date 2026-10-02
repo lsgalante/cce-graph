@@ -13,9 +13,9 @@
 //! frames while nothing moves.
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use cce_ui::engine::{Application, CursorIcon, EngineState, LogicalPosition, LogicalSize, WindowSettings};
@@ -77,10 +77,11 @@ impl Args {
 static ARGS: OnceLock<Args> = OnceLock::new();
 
 // ---- single instance -------------------------------------------------------
+//
+// The claim, the race it closes and the bounded listener reads are
+// `cce_ui::ipc::instance`'s; the lines below are this mode's protocol.
 
 const SOCKET: &str = "cce-graph-vault";
-static CLAIMED: Mutex<Option<UnixListener>> = Mutex::new(None);
-static OWNED: Mutex<Option<String>> = Mutex::new(None);
 
 /// The line a launch hands a running instance.
 fn launch_line(args: &Args) -> String {
@@ -93,50 +94,19 @@ fn launch_line(args: &Args) -> String {
 
 /// True when a running instance took this launch.
 fn forward_or_claim(args: &Args) -> bool {
-    let path = cce_ui::ipc::socket_path(SOCKET);
-    let forward = |path: &str| -> bool {
-        let Ok(mut s) = UnixStream::connect(path) else { return false };
-        if s.write_all(format!("{}\n", launch_line(args)).as_bytes()).is_err() {
-            return false;
-        }
-        let mut reply = String::new();
-        BufReader::new(s).read_line(&mut reply).is_ok()
-    };
-    if forward(&path) {
-        return true;
-    }
-    let _ = std::fs::remove_file(&path);
-    match UnixListener::bind(&path) {
-        Ok(l) => {
-            *CLAIMED.lock().unwrap() = Some(l);
-            *OWNED.lock().unwrap() = Some(path);
-            false
-        }
-        Err(_) => forward(&path),
-    }
+    cce_ui::ipc::instance::forward_or_claim(SOCKET, &launch_line(args))
 }
 
 fn spawn_listener(sender: calloop::channel::Sender<Message>) {
-    let Some(listener) = CLAIMED.lock().unwrap().take() else { return };
-    std::thread::spawn(move || {
-        for conn in listener.incoming().flatten() {
-            let mut reader = BufReader::new(conn);
-            let mut line = String::new();
-            if reader.read_line(&mut line).is_err() {
-                continue;
-            }
-            let line = line.trim();
-            let msg = match line.split_once(' ') {
-                Some(("local", note)) => Message::Mode { local: true, note: Some(note.to_string()) },
-                _ if line == "local" => Message::Mode { local: true, note: None },
-                _ if line == "global" => Message::Mode { local: false, note: None },
-                _ => continue,
-            };
-            if sender.send(msg).is_err() {
-                return;
-            }
-            let _ = reader.get_mut().write_all(b"ok\n");
-        }
+    cce_ui::ipc::instance::serve(move |line| {
+        let msg = match line.split_once(' ') {
+            Some(("local", note)) => Message::Mode { local: true, note: Some(note.to_string()) },
+            _ if line == "local" => Message::Mode { local: true, note: None },
+            _ if line == "global" => Message::Mode { local: false, note: None },
+            _ => return None,
+        };
+        sender.send(msg).ok()?;
+        Some("ok".into())
     });
 }
 
@@ -893,9 +863,7 @@ pub fn run(args: Args) {
     }
     let _ = ARGS.set(args);
     cce_ui::engine::run::<VaultApp>();
-    if let Some(p) = OWNED.lock().unwrap().take() {
-        let _ = std::fs::remove_file(p);
-    }
+    cce_ui::ipc::instance::cleanup();
 }
 
 #[cfg(test)]
