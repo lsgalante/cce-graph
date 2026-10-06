@@ -344,13 +344,25 @@ fn save_project_to_kdl_path(path: &std::path::Path, state: &GraphProjectState) -
     Ok(())
 }
 
+/// The View menu's rows, dispatched by INDEX (`drain_view_menu`). It is a
+/// `Dropdown`, whose list draws its rows as plain text — no mark glyphs, as
+/// the shared context menu has — so a row says its state in words rather
+/// than wearing a check mark drawn as a character: a switch names what it will do,
+/// and the opacity in use reads "(current)".
 fn get_view_options(show_grid: bool, opacity: f32, show_panel: bool) -> Vec<String> {
+    let opacity_row = |pct: u32, value: f32| {
+        if (opacity - value).abs() < 0.05 {
+            format!("Opacity: {pct}% (current)")
+        } else {
+            format!("Opacity: {pct}%")
+        }
+    };
     vec![
-        format!("{} Show Grid", if show_grid { "✓" } else { "  " }),
-        format!("{} Opacity: 95%", if (opacity - 0.95).abs() < 0.05 { "✓" } else { "  " }),
-        format!("{} Opacity: 75%", if (opacity - 0.75).abs() < 0.05 { "✓" } else { "  " }),
-        format!("{} Opacity: 50%", if (opacity - 0.50).abs() < 0.05 { "✓" } else { "  " }),
-        format!("{} Control Panel", if show_panel { "✓" } else { "  " }),
+        if show_grid { "Hide Grid" } else { "Show Grid" }.to_string(),
+        opacity_row(95, 0.95),
+        opacity_row(75, 0.75),
+        opacity_row(50, 0.50),
+        if show_panel { "Hide Control Panel" } else { "Show Control Panel" }.to_string(),
     ]
 }
 
