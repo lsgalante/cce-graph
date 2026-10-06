@@ -31,7 +31,6 @@ use crate::linkgraph::{Filter, LinkGraph};
 
 const BAND_H: f32 = 40.0;
 const STATUS_H: f32 = 26.0;
-const CHIP_H: f32 = 24.0;
 const FILTER_W: f32 = 240.0;
 const LABEL_SIZE: f32 = 11.0;
 const MIN_ZOOM: f32 = 0.05;
@@ -209,12 +208,16 @@ impl VaultApp {
     fn metrics(&self) -> Metrics {
         let (w, h) = (self.width as f32, self.height as f32);
         let inset = cce_ui::layout::root_plate_inset();
-        let y = (BAND_H - CHIP_H) / 2.0;
+        // The chips and filter box at the toolkit's control heights, each
+        // centred in the band.
+        let chip_h = cce_ui::layout::button_height();
+        let filter_h = cce_ui::layout::textbox_height();
+        let y = (BAND_H - chip_h) / 2.0;
         let filter_w = FILTER_W.min(w * 0.35);
-        let filter = Rect { x: w - inset - filter_w, y: y - 2.0, width: filter_w, height: CHIP_H + 4.0 };
-        let depth_chip = Rect { x: filter.x - 12.0 - 76.0, y, width: 76.0, height: CHIP_H };
-        let local_chip = Rect { x: depth_chip.x - 8.0 - 64.0, y, width: 64.0, height: CHIP_H };
-        let global_chip = Rect { x: local_chip.x - 64.0, y, width: 64.0, height: CHIP_H };
+        let filter = Rect { x: w - inset - filter_w, y: (BAND_H - filter_h) / 2.0, width: filter_w, height: filter_h };
+        let depth_chip = Rect { x: filter.x - 12.0 - 76.0, y, width: 76.0, height: chip_h };
+        let local_chip = Rect { x: depth_chip.x - 8.0 - 64.0, y, width: 64.0, height: chip_h };
+        let global_chip = Rect { x: local_chip.x - 64.0, y, width: 64.0, height: chip_h };
         Metrics {
             area: Rect { x: 0.0, y: BAND_H, width: w, height: (h - BAND_H - STATUS_H).max(0.0) },
             global_chip,

@@ -895,9 +895,11 @@ impl Application for GraphApp {
         
 
         app.menu_bar.set_rect(0.0, 0.0, 1024.0, 42.0);
-        app.dropdown_file.set_rect(10.0, 8.0, 70.0, 26.0);
-        app.dropdown_edit.set_rect(90.0, 8.0, 70.0, 26.0);
-        app.dropdown_view.set_rect(170.0, 8.0, 70.0, 26.0);
+        let dd_h = cce_ui::layout::dropdown_height();
+        let dd_y = (42.0 - dd_h) / 2.0;
+        app.dropdown_file.set_rect(10.0, dd_y, 70.0, dd_h);
+        app.dropdown_edit.set_rect(90.0, dd_y, 70.0, dd_h);
+        app.dropdown_view.set_rect(170.0, dd_y, 70.0, dd_h);
         app.graph.set_rect(0.0, 42.0, 1024.0, 768.0 - 42.0);
 
         let args: Vec<String> = std::env::args().collect();
@@ -1191,8 +1193,9 @@ impl Application for GraphApp {
             self.menu_bar.set_rect(0.0, 0.0, size.width, 42.0);
             
             // The File/Edit/View dropdown row, laid out directly (the transparent layout
-            // Plate is DISSOLVED): a row at x=10/y=8 with 10px gaps, each dropdown sized
-            // to its label via measure (the same intrinsic sizes the scene solver used).
+            // Plate is DISSOLVED): a row from x=10 with 10px gaps, centred in the 42px
+            // bar, each dropdown sized to its label via measure (the same intrinsic
+            // sizes the scene solver used).
             {
                 let mut x = 10.0;
                 let self_ptr = self as *mut Self;
@@ -1203,8 +1206,8 @@ impl Application for GraphApp {
                     // Same sizing rule the retired scene bridge used: the dropdown's intrinsic
                     // size (widest option x configured dropdown height).
                     let sz = dd.intrinsic_size()
-                        .unwrap_or(cce_ui::scene::layout::Size::new(70.0, 26.0));
-                    dd.set_rect(x, 8.0, sz.width, sz.height);
+                        .unwrap_or(cce_ui::scene::layout::Size::new(70.0, cce_ui::layout::dropdown_height()));
+                    dd.set_rect(x, (42.0 - sz.height) / 2.0, sz.width, sz.height);
                     x += sz.width + 10.0;
                 }
             }
