@@ -344,25 +344,23 @@ fn save_project_to_kdl_path(path: &std::path::Path, state: &GraphProjectState) -
     Ok(())
 }
 
-/// The View menu's rows, dispatched by INDEX (`drain_view_menu`). It is a
-/// `Dropdown`, whose list draws its rows as plain text — no mark glyphs, as
-/// the shared context menu has — so a row says its state in words rather
-/// than wearing a check mark drawn as a character: a switch names what it will do,
-/// and the opacity in use reads "(current)".
+/// The View menu's rows, dispatched by INDEX (`drain_view_menu`). Its list
+/// is a `Dropdown`, which draws the context menu's marks as glyphs: the two
+/// switches wear `MARK_CHECK` while on, and the opacities are a radio group
+/// (`MARK_ON` on the one in use, `MARK_OFF` on the rest).
 fn get_view_options(show_grid: bool, opacity: f32, show_panel: bool) -> Vec<String> {
+    use cce_ui::widget::context_menu::{MARK_CHECK, MARK_OFF, MARK_ON};
+    let switch = |on: bool, label: &str| format!("{}{label}", if on { MARK_CHECK } else { "" });
     let opacity_row = |pct: u32, value: f32| {
-        if (opacity - value).abs() < 0.05 {
-            format!("Opacity: {pct}% (current)")
-        } else {
-            format!("Opacity: {pct}%")
-        }
+        let mark = if (opacity - value).abs() < 0.05 { MARK_ON } else { MARK_OFF };
+        format!("{mark}Opacity {pct}%")
     };
     vec![
-        if show_grid { "Hide Grid" } else { "Show Grid" }.to_string(),
+        switch(show_grid, "Show Grid"),
         opacity_row(95, 0.95),
         opacity_row(75, 0.75),
         opacity_row(50, 0.50),
-        if show_panel { "Hide Control Panel" } else { "Show Control Panel" }.to_string(),
+        switch(show_panel, "Control Panel"),
     ]
 }
 
