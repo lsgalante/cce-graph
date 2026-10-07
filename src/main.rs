@@ -1102,19 +1102,15 @@ impl Application for GraphApp {
             // The root plate container is DISSOLVED (Phase 6m recipe): top-level widgets register
             // directly (parentless), the window plate is emitted below as prims, and the two
             // Plates keep their own children.
-            unsafe {
-                let self_ptr = self as *mut Self;
-
-                self.ui_context.register_widget(self.menu_bar.id(), (*self_ptr).menu_bar.as_ptr_mut());
-                self.ui_context.register_widget(self.dropdown_file.base().id(), (*self_ptr).dropdown_file.as_ptr_mut());
-                self.ui_context.register_widget(self.dropdown_edit.base().id(), (*self_ptr).dropdown_edit.as_ptr_mut());
-                self.ui_context.register_widget(self.dropdown_view.base().id(), (*self_ptr).dropdown_view.as_ptr_mut());
-                // Registered under the widget's OWN base id (the id-rooted router resolves
-                // dispatch roots through the registry; the old synthetic `graph_id` key left
-                // `graph.id()` unresolvable — a latent hole the pointer router masked).
-                self.ui_context.register_widget(self.graph.id(), (*self_ptr).graph.as_ptr_mut());
-                self.ui_context.register_widget(self.control_panel_label.base().id(), (*self_ptr).control_panel_label.as_ptr_mut());
-            }
+            self.ui_context.register_host(&mut self.menu_bar);
+            self.ui_context.register_host(&mut self.dropdown_file);
+            self.ui_context.register_host(&mut self.dropdown_edit);
+            self.ui_context.register_host(&mut self.dropdown_view);
+            // Registered under the widget's OWN base id (the id-rooted router resolves
+            // dispatch roots through the registry; the old synthetic `graph_id` key left
+            // `graph.id()` unresolvable — a latent hole the pointer router masked).
+            self.ui_context.register_host(&mut self.graph);
+            self.ui_context.register_host(&mut self.control_panel_label);
             self.widgets_registered = true;
         }
 

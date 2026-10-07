@@ -634,8 +634,7 @@ impl Application for VaultApp {
     fn display_list(&mut self, size: LogicalSize, scale: f64) -> Option<DisplayList> {
         if !self.widgets_registered {
             self.widgets_registered = true;
-            let (id, ptr) = (self.filter_input.id(), self.filter_input.as_ptr_mut());
-            self.ui_context.register_widget(id, ptr);
+            self.ui_context.register_host(&mut self.filter_input);
         }
         let resized = self.width != size.width as u32 || self.height != size.height as u32;
         self.width = size.width as u32;
