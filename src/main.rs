@@ -1,4 +1,5 @@
 use wayland_client::QueueHandle;
+use cce_ui::widget::Owned;
 use cce_ui::engine::{Application, EngineState, LogicalPosition, LogicalSize, WindowSettings};
 mod linkgraph;
 mod vault;
@@ -52,12 +53,12 @@ struct LoadedImage {
 }
 
 struct GraphApp {
-    menu_bar: Adapted<MenuBar>,
-    dropdown_file: Adapted<Dropdown>,
-    dropdown_edit: Adapted<Dropdown>,
-    dropdown_view: Adapted<Dropdown>,
+    menu_bar: Owned<Adapted<MenuBar>>,
+    dropdown_file: Owned<Adapted<Dropdown>>,
+    dropdown_edit: Owned<Adapted<Dropdown>>,
+    dropdown_view: Owned<Adapted<Dropdown>>,
 
-    graph: Adapted<Graph>,
+    graph: Owned<Adapted<Graph>>,
     needs_rebuild: bool,
     width: u32,
     height: u32,
@@ -81,7 +82,7 @@ struct GraphApp {
     panel_drag_ox: f32,
     panel_drag_oy: f32,
     show_control_panel: bool,
-    control_panel_label: cce_ui::widget::Adapted<cce_ui::widget::Label>,
+    control_panel_label: Owned<cce_ui::widget::Adapted<cce_ui::widget::Label>>,
 }
 
 fn get_default_project_path() -> std::path::PathBuf {
@@ -864,11 +865,11 @@ impl Application for GraphApp {
 
         let mut app = Self {
 
-            menu_bar,
-            dropdown_file,
-            dropdown_edit,
-            dropdown_view,
-            graph,
+            menu_bar: Owned::new(menu_bar),
+            dropdown_file: Owned::new(dropdown_file),
+            dropdown_edit: Owned::new(dropdown_edit),
+            dropdown_view: Owned::new(dropdown_view),
+            graph: Owned::new(graph),
             needs_rebuild: true,
             width: 1024,
             height: 768,
@@ -890,7 +891,7 @@ impl Application for GraphApp {
             panel_drag_ox: 0.0,
             panel_drag_oy: 0.0,
             show_control_panel,
-            control_panel_label,
+            control_panel_label: Owned::new(control_panel_label),
         };
         
 
@@ -1557,7 +1558,7 @@ impl Application for GraphApp {
                             // A press on a port can complete a wire drawn
                             // with the mouse; write it into the node.
                             if let Some((to, from, port)) =
-                                GraphController::take_pending_connection_to_port(&mut *self.graph)
+                                GraphController::take_pending_connection_to_port(&mut **self.graph)
                             {
                                 let mut nodes = self.graph.get_nodes();
                                 if wiring::connect(&mut nodes, &to, &from, port) {

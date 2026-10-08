@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use cce_ui::widget::Owned;
 use cce_ui::engine::{Application, CursorIcon, EngineState, LogicalPosition, LogicalSize, WindowSettings};
 use cce_ui::scene::layout::Rect;
 use cce_ui::scene::paint::{Cap, DisplayList, PaintCtx};
@@ -173,7 +174,7 @@ pub struct VaultApp {
     center: Option<String>,
     next_poll: Instant,
 
-    filter_input: Adapted<TextBox>,
+    filter_input: Owned<Adapted<TextBox>>,
     filter_seen: String,
 
     /// World point at the middle of the graph area, and px per world unit.
@@ -561,7 +562,7 @@ impl Application for VaultApp {
             depth: 1,
             center: None,
             next_poll: Instant::now(),
-            filter_input: TextBox::new(String::new()).with_placeholder("Filter: words, #tag, path:"),
+            filter_input: Owned::new(TextBox::new(String::new()).with_placeholder("Filter: words, #tag, path:")),
             filter_seen: String::new(),
             cam: (0.0, 0.0),
             zoom: 1.0,
