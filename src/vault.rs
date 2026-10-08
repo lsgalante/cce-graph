@@ -744,7 +744,7 @@ impl Application for VaultApp {
             return None;
         }
         if pressed && self.filter_input.editing {
-            self.filter_input.unfocus();
+            self.ui_context.unfocus_widget(&mut self.filter_input);
         }
         if pressed && button == MouseButton::Left {
             if m.global_chip.contains(s.0, s.1) {
@@ -818,7 +818,7 @@ impl Application for VaultApp {
         let pressed = event.state == ElementState::Pressed;
         if self.filter_input.editing {
             if pressed && matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
-                self.filter_input.unfocus();
+                self.ui_context.unfocus_widget(&mut self.filter_input);
                 return None;
             }
             let ev = Event::KeyInput(event.clone());
