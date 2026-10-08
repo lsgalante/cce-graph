@@ -19,14 +19,13 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use cce_ui::widget::Owned;
-use cce_ui::engine::{Application, CursorIcon, EngineState, LogicalPosition, LogicalSize, WindowSettings};
+use cce_ui::engine::{Application, CursorIcon, LogicalPosition, LogicalSize, WindowSettings};
 use cce_ui::scene::layout::Rect;
 use cce_ui::scene::paint::{Cap, DisplayList, PaintCtx};
 use cce_ui::widget::{
     Adapted, ElementState, Event, Key, KeyEvent, MouseButton, MouseScrollDelta, NamedKey, TextBox, WidgetHost,
 };
 use cce_vault::{Index, VaultWatcher};
-use wayland_client::QueueHandle;
 
 use crate::linkgraph::{Filter, LinkGraph};
 
@@ -530,7 +529,9 @@ impl Application for VaultApp {
         Some(&mut self.ui_context)
     }
 
-    fn new(_qh: &QueueHandle<EngineState<Self>>, sender: calloop::channel::Sender<Message>) -> Self {
+    fn create(sender: cce_ui::engine::AppSender<Message>) -> Self {
+        // The app keeps calloop's sender; `AppSender` converts into it.
+        let sender: calloop::channel::Sender<Message> = sender.into();
         let args = ARGS.get().expect("args set in run");
         let root = cce_vault::config::vault_root(args.vault.as_deref()).map_err(|e| {
             format!("No vault: {e}\nSet `vault {{ path \"~/Notes\" }}` in ~/.config/cce/config.kdl, or pass --vault <dir>.")

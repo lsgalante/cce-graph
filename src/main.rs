@@ -1,6 +1,5 @@
-use wayland_client::QueueHandle;
 use cce_ui::widget::Owned;
-use cce_ui::engine::{Application, EngineState, LogicalPosition, LogicalSize, WindowSettings};
+use cce_ui::engine::{Application, LogicalPosition, LogicalSize, WindowSettings};
 mod linkgraph;
 mod vault;
 mod wiring;
@@ -804,7 +803,9 @@ impl Application for GraphApp {
         Some(&mut self.ui_context)
     }
 
-    fn new(_qh: &QueueHandle<EngineState<Self>>, _sender: calloop::channel::Sender<Self::Message>) -> Self {
+    fn create(_sender: cce_ui::engine::AppSender<Self::Message>) -> Self {
+        // The app keeps calloop's sender; `AppSender` converts into it.
+        let _sender: calloop::channel::Sender<Self::Message> = _sender.into();
         let mut graph = Graph::new();
         
         let (show_grid, snap_enabled, opacity, gap_width) = load_config();
@@ -880,7 +881,7 @@ impl Application for GraphApp {
             loaded_project_path: None,
             loaded_images: Vec::new(),
             widgets_registered: false,
-            message_sender: _sender.clone(),
+            message_sender: _sender.clone().into(),
             dragging_image_idx: None,
             drag_image_ox: 0.0,
             drag_image_oy: 0.0,
