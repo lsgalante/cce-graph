@@ -1,4 +1,4 @@
-use cce_ui::widget::Owned;
+use cce_ui::widget::Handle;
 use cce_ui::engine::{Application, LogicalPosition, LogicalSize, WindowSettings};
 mod linkgraph;
 mod vault;
@@ -52,12 +52,12 @@ struct LoadedImage {
 }
 
 struct GraphApp {
-    menu_bar: Owned<Adapted<MenuBar>>,
-    dropdown_file: Owned<Adapted<Dropdown>>,
-    dropdown_edit: Owned<Adapted<Dropdown>>,
-    dropdown_view: Owned<Adapted<Dropdown>>,
+    menu_bar: Handle<Adapted<MenuBar>>,
+    dropdown_file: Handle<Adapted<Dropdown>>,
+    dropdown_edit: Handle<Adapted<Dropdown>>,
+    dropdown_view: Handle<Adapted<Dropdown>>,
 
-    graph: Owned<Adapted<Graph>>,
+    graph: Handle<Adapted<Graph>>,
     needs_rebuild: bool,
     width: u32,
     height: u32,
@@ -67,7 +67,8 @@ struct GraphApp {
     ui_context: cce_ui::context::UiContext,
     loaded_project_path: Option<std::path::PathBuf>,
     loaded_images: Vec<LoadedImage>,
-    widgets_registered: bool,
+    /// Whether the first layout has run.
+    laid_out: bool,
     message_sender: calloop::channel::Sender<AppMessage>,
     dragging_image_idx: Option<usize>,
     drag_image_ox: f32,
@@ -81,7 +82,7 @@ struct GraphApp {
     panel_drag_ox: f32,
     panel_drag_oy: f32,
     show_control_panel: bool,
-    control_panel_label: Owned<cce_ui::widget::Adapted<cce_ui::widget::Label>>,
+    control_panel_label: Handle<cce_ui::widget::Adapted<cce_ui::widget::Label>>,
 }
 
 fn get_default_project_path() -> std::path::PathBuf {
@@ -434,10 +435,10 @@ impl GraphApp {
     /// it was made. Keeps the sentinel `selected = 999` protocol.
     fn drain_file_menu(&mut self) -> Option<AppMessage> {
         let mut msg = None;
-        if self.dropdown_file.take_change() {
-            let selected_idx = self.dropdown_file.selected;
-            if selected_idx < self.dropdown_file.options.len() {
-                let option_text = &self.dropdown_file.options[selected_idx];
+        if self.ui_context[self.dropdown_file].take_change() {
+            let selected_idx = self.ui_context[self.dropdown_file].selected;
+            if selected_idx < self.ui_context[self.dropdown_file].options.len() {
+                let option_text = &self.ui_context[self.dropdown_file].options[selected_idx];
                 match option_text.as_str() {
                     "New" => msg = Some(AppMessage::New),
                     "Open" | "Open..." => msg = Some(AppMessage::Open),
@@ -451,28 +452,28 @@ impl GraphApp {
                     }
                 }
             }
-            self.dropdown_file.selected = 999;
+            self.ui_context[self.dropdown_file].selected = 999;
         }
         msg
     }
 
     fn drain_edit_menu(&mut self) -> Option<AppMessage> {
         let mut msg = None;
-        if self.dropdown_edit.take_change() {
-            match self.dropdown_edit.selected {
+        if self.ui_context[self.dropdown_edit].take_change() {
+            match self.ui_context[self.dropdown_edit].selected {
                 0 => msg = Some(AppMessage::AddNode),
                 1 => msg = Some(AppMessage::AddImage),
                 _ => {}
             }
-            self.dropdown_edit.selected = 999;
+            self.ui_context[self.dropdown_edit].selected = 999;
         }
         msg
     }
 
     fn drain_view_menu(&mut self) -> Option<AppMessage> {
         let mut msg = None;
-        if self.dropdown_view.take_change() {
-            match self.dropdown_view.selected {
+        if self.ui_context[self.dropdown_view].take_change() {
+            match self.ui_context[self.dropdown_view].selected {
                 0 => msg = Some(AppMessage::ToggleGrid),
                 1 => msg = Some(AppMessage::SetOpacity95),
                 2 => msg = Some(AppMessage::SetOpacity75),
@@ -480,14 +481,14 @@ impl GraphApp {
                 4 => msg = Some(AppMessage::ToggleControlPanel),
                 _ => {}
             }
-            self.dropdown_view.selected = 999;
+            self.ui_context[self.dropdown_view].selected = 999;
         }
         msg
     }
 
     fn delete_selected_node(&mut self) {
-        if let Some(idx) = self.graph.selected_node() {
-            let mut nodes = self.graph.get_nodes();
+        if let Some(idx) = self.ui_context[self.graph].selected_node() {
+            let mut nodes = self.ui_context[self.graph].get_nodes();
             if idx < nodes.len() {
                 let deleted_node_name = nodes[idx].name.clone();
                 nodes.remove(idx);
@@ -501,8 +502,8 @@ impl GraphApp {
                     }
                 }
                 
-                self.graph.set_nodes(&nodes);
-                self.graph.set_selected_node(None);
+                self.ui_context[self.graph].set_nodes(&nodes);
+                self.ui_context[self.graph].set_selected_node(None);
                 self.needs_rebuild = true;
             }
         } else if let Some(idx) = self.selected_image_idx {
@@ -515,7 +516,7 @@ impl GraphApp {
     }
 
     fn update_view_options(&mut self) {
-        self.dropdown_view.options = get_view_options(self.show_grid, self.opacity, self.show_control_panel);
+        self.ui_context[self.dropdown_view].options = get_view_options(self.show_grid, self.opacity, self.show_control_panel);
     }
 
     /// The dissolved control panel's rect (fixed 210x160, app-tracked position).
@@ -540,14 +541,14 @@ impl GraphApp {
         let center_x = left_x + available_w / 2.0;
         let center_y = start_y + available_h / 2.0;
 
-        let (_, _, lw, lh) = self.control_panel_label.rect();
+        let (_, _, lw, lh) = self.ui_context[self.control_panel_label].rect();
         let use_w = if lw > 0.0 { lw.min(available_w) } else { available_w };
         let use_h = if lh > 0.0 { lh } else { 50.0 };
         let cx = (center_x - use_w / 2.0).clamp(left_x, (left_x + available_w - use_w).max(left_x));
         let cy = (center_y - use_h / 2.0).clamp(start_y, (start_y + available_h - use_h).max(start_y));
         let cw = use_w.min(px + pw - pad - cx);
         let ch = use_h.min(py + ph - pad - cy);
-        self.control_panel_label.set_rect(cx, cy, cw, ch);
+        self.ui_context[self.control_panel_label].set_rect(cx, cy, cw, ch);
     }
 
     /// The dissolved Plate's visual: config plate color (else page-low, with the drag tint),
@@ -571,7 +572,7 @@ impl GraphApp {
     }
 
     fn new_project(&mut self) {
-        self.graph.set_nodes(&[]);
+        self.ui_context[self.graph].set_nodes(&[]);
         self.loaded_images.clear();
         self.loaded_project_path = None;
         self.needs_rebuild = true;
@@ -600,7 +601,7 @@ impl GraphApp {
                 .and_then(|n| n.to_str())
                 .unwrap_or("Graph Project")
                 .to_string(),
-            nodes: self.graph.get_nodes(),
+            nodes: self.ui_context[self.graph].get_nodes(),
             images: project_images,
             show_grid: self.show_grid,
             opacity: self.opacity,
@@ -654,8 +655,8 @@ impl GraphApp {
         }
         options.push("-".to_string());
         options.push("Exit".to_string());
-        self.dropdown_file.options = options;
-        self.dropdown_file.selected = 999;
+        self.ui_context[self.dropdown_file].options = options;
+        self.ui_context[self.dropdown_file].selected = 999;
         self.needs_rebuild = true;
     }
 
@@ -684,7 +685,7 @@ impl GraphApp {
 
         let mut nodes = state.nodes.clone();
         wiring::ensure_ids(&mut nodes);
-        self.graph.set_nodes(&nodes);
+        self.ui_context[self.graph].set_nodes(&nodes);
         self.show_grid = state.show_grid;
         self.opacity = state.opacity;
 
@@ -711,9 +712,9 @@ impl GraphApp {
             }
         }
 
-        // Apply grid/background settings to self.graph
-        self.graph.set_show_network_grid(self.show_grid);
-        self.graph.set_network_opacity(self.opacity);
+        // Apply grid/background settings to self.ui_context[self.graph]
+        self.ui_context[self.graph].set_show_network_grid(self.show_grid);
+        self.ui_context[self.graph].set_network_opacity(self.opacity);
 
         // Update view dropdown options
         self.update_view_options();
@@ -724,9 +725,9 @@ impl GraphApp {
     }
 
     fn hit_test_image(&self, px: f32, py: f32) -> Option<usize> {
-        let (grid_origin_x, grid_origin_y) = self.graph.grid_origin();
-        let (grid_size_x, grid_size_y) = self.graph.grid_sizes();
-        let (skipped_row_h, skipped_col_w) = self.graph.skipped_sizes();
+        let (grid_origin_x, grid_origin_y) = self.ui_context[self.graph].grid_origin();
+        let (grid_size_x, grid_size_y) = self.ui_context[self.graph].grid_sizes();
+        let (skipped_row_h, skipped_col_w) = self.ui_context[self.graph].skipped_sizes();
         
         let step_x = grid_size_x + skipped_col_w;
         let step_y = grid_size_y + skipped_row_h;
@@ -864,23 +865,26 @@ impl Application for GraphApp {
             .with_font_size(12.0)
             .with_color([204, 204, 221]);
 
+        // The context owns the widgets; the app keeps their handles.
+        let mut ui_context = cce_ui::context::UiContext::new();
+        let control_panel_label = ui_context.insert(control_panel_label);
         let mut app = Self {
 
-            menu_bar: Owned::new(menu_bar),
-            dropdown_file: Owned::new(dropdown_file),
-            dropdown_edit: Owned::new(dropdown_edit),
-            dropdown_view: Owned::new(dropdown_view),
-            graph: Owned::new(graph),
+            menu_bar: ui_context.insert(menu_bar),
+            dropdown_file: ui_context.insert(dropdown_file),
+            dropdown_edit: ui_context.insert(dropdown_edit),
+            dropdown_view: ui_context.insert(dropdown_view),
+            graph: ui_context.insert(graph),
             needs_rebuild: true,
             width: 1024,
             height: 768,
             scale_factor: 1.0,
             show_grid,
             opacity,
-            ui_context: cce_ui::context::UiContext::new(),
+            ui_context,
             loaded_project_path: None,
             loaded_images: Vec::new(),
-            widgets_registered: false,
+            laid_out: false,
             message_sender: _sender.clone().into(),
             dragging_image_idx: None,
             drag_image_ox: 0.0,
@@ -892,17 +896,17 @@ impl Application for GraphApp {
             panel_drag_ox: 0.0,
             panel_drag_oy: 0.0,
             show_control_panel,
-            control_panel_label: Owned::new(control_panel_label),
+            control_panel_label,
         };
         
 
-        app.menu_bar.set_rect(0.0, 0.0, 1024.0, 42.0);
+        app.ui_context[app.menu_bar].set_rect(0.0, 0.0, 1024.0, 42.0);
         let dd_h = cce_ui::layout::dropdown_height();
         let dd_y = (42.0 - dd_h) / 2.0;
-        app.dropdown_file.set_rect(10.0, dd_y, 70.0, dd_h);
-        app.dropdown_edit.set_rect(90.0, dd_y, 70.0, dd_h);
-        app.dropdown_view.set_rect(170.0, dd_y, 70.0, dd_h);
-        app.graph.set_rect(0.0, 42.0, 1024.0, 768.0 - 42.0);
+        app.ui_context[app.dropdown_file].set_rect(10.0, dd_y, 70.0, dd_h);
+        app.ui_context[app.dropdown_edit].set_rect(90.0, dd_y, 70.0, dd_h);
+        app.ui_context[app.dropdown_view].set_rect(170.0, dd_y, 70.0, dd_h);
+        app.ui_context[app.graph].set_rect(0.0, 42.0, 1024.0, 768.0 - 42.0);
 
         let args: Vec<String> = std::env::args().collect();
         if args.len() > 1 {
@@ -1007,7 +1011,7 @@ impl Application for GraphApp {
             }
             AppMessage::ToggleGrid => {
                 self.show_grid = !self.show_grid;
-                self.graph.set_show_network_grid(self.show_grid);
+                self.ui_context[self.graph].set_show_network_grid(self.show_grid);
                 self.update_view_options();
                 write_config_value("graph_show_grid", &self.show_grid.to_string());
                 *needs_rebuild = true;
@@ -1015,7 +1019,7 @@ impl Application for GraphApp {
             }
             AppMessage::SetOpacity95 => {
                 self.opacity = 0.95;
-                self.graph.set_network_opacity(0.95);
+                self.ui_context[self.graph].set_network_opacity(0.95);
                 self.update_view_options();
                 write_config_value("graph_network_opacity", "0.95");
                 *needs_rebuild = true;
@@ -1023,7 +1027,7 @@ impl Application for GraphApp {
             }
             AppMessage::SetOpacity75 => {
                 self.opacity = 0.75;
-                self.graph.set_network_opacity(0.75);
+                self.ui_context[self.graph].set_network_opacity(0.75);
                 self.update_view_options();
                 write_config_value("graph_network_opacity", "0.75");
                 *needs_rebuild = true;
@@ -1031,7 +1035,7 @@ impl Application for GraphApp {
             }
             AppMessage::SetOpacity50 => {
                 self.opacity = 0.50;
-                self.graph.set_network_opacity(0.50);
+                self.ui_context[self.graph].set_network_opacity(0.50);
                 self.update_view_options();
                 write_config_value("graph_network_opacity", "0.50");
                 *needs_rebuild = true;
@@ -1044,7 +1048,7 @@ impl Application for GraphApp {
                 self.needs_rebuild = true;
             }
             AppMessage::AddNode => {
-                let mut nodes = self.graph.get_nodes();
+                let mut nodes = self.ui_context[self.graph].get_nodes();
                 let next_id = nodes.len() + 1;
                 nodes.push(GraphNode {
                     id: String::new(),
@@ -1057,7 +1061,7 @@ impl Application for GraphApp {
                     outputs: 1,
                 });
                 wiring::ensure_ids(&mut nodes);
-                self.graph.set_nodes(&nodes);
+                self.ui_context[self.graph].set_nodes(&nodes);
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }
@@ -1099,27 +1103,13 @@ impl Application for GraphApp {
         // through its per-label hatch, the control panel via the 6i container-text fix).
         self.ui_context.clear_popovers();
 
-        let is_first_layout = !self.widgets_registered;
-        if !self.widgets_registered {
-            // The root plate container is DISSOLVED (Phase 6m recipe): top-level widgets register
-            // directly (parentless), the window plate is emitted below as prims, and the two
-            // Plates keep their own children.
-            self.ui_context.register_host(&mut self.menu_bar);
-            self.ui_context.register_host(&mut self.dropdown_file);
-            self.ui_context.register_host(&mut self.dropdown_edit);
-            self.ui_context.register_host(&mut self.dropdown_view);
-            // Registered under the widget's OWN base id (the id-rooted router resolves
-            // dispatch roots through the registry; the old synthetic `graph_id` key left
-            // `graph.id()` unresolvable — a latent hole the pointer router masked).
-            self.ui_context.register_host(&mut self.graph);
-            self.ui_context.register_host(&mut self.control_panel_label);
-            self.widgets_registered = true;
-        }
+        let is_first_layout = !self.laid_out;
+        self.laid_out = true;
 
         // Check selected node and update control panel label
-        let selected_node_idx = self.graph.selected_node();
+        let selected_node_idx = self.ui_context[self.graph].selected_node();
         let label_text = if let Some(idx) = selected_node_idx {
-            let nodes = self.graph.get_nodes();
+            let nodes = self.ui_context[self.graph].get_nodes();
             if let Some(node) = nodes.get(idx) {
                 let mut info = format!("Selected Node:\nID: {}\nName: {}\nType: {}\nInputs: {}\nOutputs: {}",
                     node.id, node.name, node.node_type, node.inputs, node.outputs
@@ -1154,31 +1144,31 @@ impl Application for GraphApp {
         };
 
         let text_changed = {
-            let current_text = self.control_panel_label.base().label.as_ref();
+            let current_text = self.ui_context[self.control_panel_label].base().label.as_ref();
             current_text != Some(&label_text)
         };
         if text_changed {
-            self.control_panel_label.set_text(&label_text);
+            self.ui_context[self.control_panel_label].set_text(&label_text);
             self.needs_rebuild = true;
         }
 
-        if self.dropdown_file.popover_rect().is_some() {
+        if self.ui_context[self.dropdown_file].popover_rect().is_some() {
             // ui_context ONLY (the 6l pattern): the popover is drawn in the display list by
             // the walk; a global registration spawns a render-only xdg popup that swallows
             // clicks on the open menu.
-            self.ui_context.register_popover(&mut self.dropdown_file);
+            self.ui_context.register_popover_id(self.dropdown_file.id());
         }
-        if self.dropdown_edit.popover_rect().is_some() {
+        if self.ui_context[self.dropdown_edit].popover_rect().is_some() {
             // ui_context ONLY (the 6l pattern): the popover is drawn in the display list by
             // the walk; a global registration spawns a render-only xdg popup that swallows
             // clicks on the open menu.
-            self.ui_context.register_popover(&mut self.dropdown_edit);
+            self.ui_context.register_popover_id(self.dropdown_edit.id());
         }
-        if self.dropdown_view.popover_rect().is_some() {
+        if self.ui_context[self.dropdown_view].popover_rect().is_some() {
             // ui_context ONLY (the 6l pattern): the popover is drawn in the display list by
             // the walk; a global registration spawns a render-only xdg popup that swallows
             // clicks on the open menu.
-            self.ui_context.register_popover(&mut self.dropdown_view);
+            self.ui_context.register_popover_id(self.dropdown_view.id());
         }
 
         let size_changed = self.width != size.width as u32 || self.height != size.height as u32 || self.scale_factor != scale;
@@ -1188,7 +1178,7 @@ impl Application for GraphApp {
             self.scale_factor = scale;
             
             // Layout MenuBar at the top
-            self.menu_bar.set_rect(0.0, 0.0, size.width, 42.0);
+            self.ui_context[self.menu_bar].set_rect(0.0, 0.0, size.width, 42.0);
             
             // The File/Edit/View dropdown row, laid out directly (the transparent layout
             // Plate is DISSOLVED): a row from x=10 with 10px gaps, centred in the 42px
@@ -1196,11 +1186,8 @@ impl Application for GraphApp {
             // sizes the scene solver used).
             {
                 let mut x = 10.0;
-                let self_ptr = self as *mut Self;
-                let dds: [&mut cce_ui::widget::Adapted<Dropdown>; 3] = unsafe {
-                    [&mut (*self_ptr).dropdown_file, &mut (*self_ptr).dropdown_edit, &mut (*self_ptr).dropdown_view]
-                };
-                for dd in dds {
+                for h in [self.dropdown_file, self.dropdown_edit, self.dropdown_view] {
+                    let dd = &mut self.ui_context[h];
                     // Same sizing rule the retired scene bridge used: the dropdown's intrinsic
                     // size (widest option x configured dropdown height).
                     let sz = dd.intrinsic_size()
@@ -1211,7 +1198,7 @@ impl Application for GraphApp {
             }
 
             // Layout Graph below MenuBar
-            self.graph.set_rect(0.0, 42.0, size.width, size.height - 42.0);
+            self.ui_context[self.graph].set_rect(0.0, 42.0, size.width, size.height - 42.0);
 
             // Initial control panel positioning (bounds are clamped at drag time)
             if size_changed || is_first_layout {
@@ -1233,11 +1220,11 @@ impl Application for GraphApp {
         {
             // The walk takes shared borrows now — no self-alias, no pointers.
             let tops: [&dyn cce_ui::widget::WidgetHost; 5] = [
-                &self.menu_bar,
-                &self.dropdown_file,
-                &self.dropdown_edit,
-                &self.dropdown_view,
-                &self.graph,
+                &self.ui_context[self.menu_bar],
+                &self.ui_context[self.dropdown_file],
+                &self.ui_context[self.dropdown_edit],
+                &self.ui_context[self.dropdown_view],
+                &self.ui_context[self.graph],
             ];
             for top in tops {
                 cce_ui::scene::painter::paint_root_into(&self.ui_context, top, &mut pc);
@@ -1260,18 +1247,18 @@ impl Application for GraphApp {
                     pc.quad(rect, fill);
                 }
             }
-            cce_ui::scene::painter::paint_root_into(&self.ui_context, &self.control_panel_label, &mut pc);
+            cce_ui::scene::painter::paint_root_into(&self.ui_context, &self.ui_context[self.control_panel_label], &mut pc);
         }
 
         // Draw foreground images in the graph grid (above nodes, fully opaque, preserving aspect ratio)
-        let (grid_origin_x, grid_origin_y) = self.graph.grid_origin();
-        let (grid_size_x, grid_size_y) = self.graph.grid_sizes();
-        let (skipped_row_h, skipped_col_w) = self.graph.skipped_sizes();
+        let (grid_origin_x, grid_origin_y) = self.ui_context[self.graph].grid_origin();
+        let (grid_size_x, grid_size_y) = self.ui_context[self.graph].grid_sizes();
+        let (skipped_row_h, skipped_col_w) = self.ui_context[self.graph].skipped_sizes();
         
         let step_x = grid_size_x + skipped_col_w;
         let step_y = grid_size_y + skipped_row_h;
 
-        let (graph_x, graph_y, graph_w, graph_h) = self.graph.rect();
+        let (graph_x, graph_y, graph_w, graph_h) = self.ui_context[self.graph].rect();
         let min_x = graph_x;
         let min_y = graph_y;
         let max_x = graph_x + graph_w;
@@ -1376,11 +1363,11 @@ impl Application for GraphApp {
             return;
         }
 
-        let over_menu = self.dropdown_file.open || self.dropdown_edit.open || self.dropdown_view.open
-            || self.dropdown_file.hit_test(pos.x, pos.y, &self.ui_context)
-            || self.dropdown_edit.hit_test(pos.x, pos.y, &self.ui_context)
-            || self.dropdown_view.hit_test(pos.x, pos.y, &self.ui_context)
-            || self.menu_bar.hit_test(pos.x, pos.y, &self.ui_context);
+        let over_menu = self.ui_context[self.dropdown_file].open || self.ui_context[self.dropdown_edit].open || self.ui_context[self.dropdown_view].open
+            || self.ui_context[self.dropdown_file].hit_test(pos.x, pos.y, &self.ui_context)
+            || self.ui_context[self.dropdown_edit].hit_test(pos.x, pos.y, &self.ui_context)
+            || self.ui_context[self.dropdown_view].hit_test(pos.x, pos.y, &self.ui_context)
+            || self.ui_context[self.menu_bar].hit_test(pos.x, pos.y, &self.ui_context);
 
         // Routed dispatch (6bd shrink): one Event through the router per root; the panel
         // and loaded-image drags stay app-owned (they are not widgets).
@@ -1414,9 +1401,9 @@ impl Application for GraphApp {
             if !handled_by_panel {
                 // Otherwise feed it to Graph
                 if let Some(img_idx) = self.dragging_image_idx {
-                    let (grid_origin_x, grid_origin_y) = self.graph.grid_origin();
-                    let (grid_size_x, grid_size_y) = self.graph.grid_sizes();
-                    let (skipped_row_h, skipped_col_w) = self.graph.skipped_sizes();
+                    let (grid_origin_x, grid_origin_y) = self.ui_context[self.graph].grid_origin();
+                    let (grid_size_x, grid_size_y) = self.ui_context[self.graph].grid_sizes();
+                    let (skipped_row_h, skipped_col_w) = self.ui_context[self.graph].skipped_sizes();
                     let step_x = grid_size_x + skipped_col_w;
                     let step_y = grid_size_y + skipped_row_h;
 
@@ -1426,7 +1413,7 @@ impl Application for GraphApp {
                     let mut col = (nx - grid_origin_x) / step_x;
                     let mut row = (ny - grid_origin_y) / step_y;
 
-                    if self.graph.grid_snap_enabled() {
+                    if self.ui_context[self.graph].grid_snap_enabled() {
                         col = (col * 2.0).round() / 2.0;
                         row = (row * 2.0).round() / 2.0;
                     }
@@ -1482,11 +1469,11 @@ impl Application for GraphApp {
             return None;
         }
 
-        let over_menu = self.dropdown_file.open || self.dropdown_edit.open || self.dropdown_view.open
-            || self.dropdown_file.hit_test(pos.x, pos.y, &self.ui_context)
-            || self.dropdown_edit.hit_test(pos.x, pos.y, &self.ui_context)
-            || self.dropdown_view.hit_test(pos.x, pos.y, &self.ui_context)
-            || self.menu_bar.hit_test(pos.x, pos.y, &self.ui_context);
+        let over_menu = self.ui_context[self.dropdown_file].open || self.ui_context[self.dropdown_edit].open || self.ui_context[self.dropdown_view].open
+            || self.ui_context[self.dropdown_file].hit_test(pos.x, pos.y, &self.ui_context)
+            || self.ui_context[self.dropdown_edit].hit_test(pos.x, pos.y, &self.ui_context)
+            || self.ui_context[self.dropdown_view].hit_test(pos.x, pos.y, &self.ui_context)
+            || self.ui_context[self.menu_bar].hit_test(pos.x, pos.y, &self.ui_context);
 
         let ev = Event::MouseButton { button, state, x: pos.x, y: pos.y, local_x: pos.x, local_y: pos.y };
         if over_menu {
@@ -1559,18 +1546,18 @@ impl Application for GraphApp {
                             // A press on a port can complete a wire drawn
                             // with the mouse; write it into the node.
                             if let Some((to, from, port)) =
-                                GraphController::take_pending_connection_to_port(&mut **self.graph)
+                                GraphController::take_pending_connection_to_port(&mut *self.ui_context[self.graph])
                             {
-                                let mut nodes = self.graph.get_nodes();
+                                let mut nodes = self.ui_context[self.graph].get_nodes();
                                 if wiring::connect(&mut nodes, &to, &from, port) {
-                                    self.graph.set_nodes(&nodes);
+                                    self.ui_context[self.graph].set_nodes(&nodes);
                                 }
                             }
                         } else if let Some(img_idx) = self.hit_test_image(pos.x, pos.y) {
                             let img = &self.loaded_images[img_idx];
-                            let (grid_origin_x, grid_origin_y) = self.graph.grid_origin();
-                            let (grid_size_x, grid_size_y) = self.graph.grid_sizes();
-                            let (skipped_row_h, skipped_col_w) = self.graph.skipped_sizes();
+                            let (grid_origin_x, grid_origin_y) = self.ui_context[self.graph].grid_origin();
+                            let (grid_size_x, grid_size_y) = self.ui_context[self.graph].grid_sizes();
+                            let (skipped_row_h, skipped_col_w) = self.ui_context[self.graph].skipped_sizes();
                             let step_x = grid_size_x + skipped_col_w;
                             let step_y = grid_size_y + skipped_row_h;
 
@@ -1581,11 +1568,11 @@ impl Application for GraphApp {
                             self.drag_image_ox = pos.x - img_screen_x;
                             self.drag_image_oy = pos.y - img_screen_y;
                             self.selected_image_idx = Some(img_idx);
-                            self.graph.set_selected_node(None);
+                            self.ui_context[self.graph].set_selected_node(None);
                             changed = true;
                         } else {
                             self.selected_image_idx = None;
-                            self.graph.set_selected_node(None);
+                            self.ui_context[self.graph].set_selected_node(None);
                             changed = true;
                         }
                     } else if state == ElementState::Released {
@@ -1636,11 +1623,11 @@ impl Application for GraphApp {
         // its mouse events above, drained through the same helpers. The
         // widget has handled these keys itself since cce-ui's routed events;
         // this app just never forwarded a key to it (the cce-files bug).
-        if self.dropdown_file.open || self.dropdown_edit.open || self.dropdown_view.open {
+        if self.ui_context[self.dropdown_file].open || self.ui_context[self.dropdown_edit].open || self.ui_context[self.dropdown_view].open {
             let kev = Event::KeyInput(event.clone());
-            let root = if self.dropdown_file.open {
+            let root = if self.ui_context[self.dropdown_file].open {
                 self.dropdown_file.id()
-            } else if self.dropdown_edit.open {
+            } else if self.ui_context[self.dropdown_edit].open {
                 self.dropdown_edit.id()
             } else {
                 self.dropdown_view.id()

@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use cce_ui::widget::Owned;
+use cce_ui::widget::Handle;
 use cce_ui::engine::{Application, CursorIcon, LogicalPosition, LogicalSize, WindowSettings};
 use cce_ui::scene::layout::Rect;
 use cce_ui::scene::paint::{Cap, DisplayList, PaintCtx};
@@ -173,7 +173,7 @@ pub struct VaultApp {
     center: Option<String>,
     next_poll: Instant,
 
-    filter_input: Owned<Adapted<TextBox>>,
+    filter_input: Handle<Adapted<TextBox>>,
     filter_seen: String,
 
     /// World point at the middle of the graph area, and px per world unit.
@@ -228,10 +228,10 @@ impl VaultApp {
     }
 
     fn filter_query(&self) -> String {
-        if self.filter_input.editing {
-            self.filter_input.edit_buffer.clone()
+        if self.ui_context[self.filter_input].editing {
+            self.ui_context[self.filter_input].edit_buffer.clone()
         } else {
-            self.filter_input.text.clone()
+            self.ui_context[self.filter_input].text.clone()
         }
     }
 
@@ -387,7 +387,7 @@ impl VaultApp {
         if self.local {
             chip(pc, m.depth_chip, &format!("Depth {}", self.depth), false);
         }
-        cce_ui::scene::painter::paint_root_into(&self.ui_context, &self.filter_input, pc);
+        cce_ui::scene::painter::paint_root_into(&self.ui_context, &self.ui_context[self.filter_input], pc);
     }
 
     fn paint_status(&self, pc: &mut PaintCtx) {
@@ -553,6 +553,8 @@ impl Application for VaultApp {
         spawn_listener(sender.clone());
         let graph = index.as_ref().map(|ix| LinkGraph::build(ix, None)).unwrap_or_default();
         let n = graph.len();
+        // The context owns the widgets; the app keeps their handles.
+        let mut ui_context = cce_ui::context::UiContext::new();
         let mut app = VaultApp {
             index,
             error,
@@ -563,7 +565,7 @@ impl Application for VaultApp {
             depth: 1,
             center: None,
             next_poll: Instant::now(),
-            filter_input: Owned::new(TextBox::new(String::new()).with_placeholder("Filter: words, #tag, path:")),
+            filter_input: ui_context.insert(TextBox::new(String::new()).with_placeholder("Filter: words, #tag, path:")),
             filter_seen: String::new(),
             cam: (0.0, 0.0),
             zoom: 1.0,
@@ -576,7 +578,7 @@ impl Application for VaultApp {
             width: 1000,
             height: 700,
             needs_rebuild: true,
-            ui_context: cce_ui::context::UiContext::new(),
+            ui_context,
             widgets_registered: false,
         };
         app.set_mode(args.local, args.note.clone());
@@ -636,7 +638,6 @@ impl Application for VaultApp {
     fn display_list(&mut self, size: LogicalSize, scale: f64) -> Option<DisplayList> {
         if !self.widgets_registered {
             self.widgets_registered = true;
-            self.ui_context.register_host(&mut self.filter_input);
         }
         let resized = self.width != size.width as u32 || self.height != size.height as u32;
         self.width = size.width as u32;
@@ -645,7 +646,7 @@ impl Application for VaultApp {
         let m = self.metrics();
         if self.needs_rebuild || resized {
             let f = m.filter;
-            self.filter_input.set_rect(f.x, f.y, f.width, f.height);
+            self.ui_context[self.filter_input].set_rect(f.x, f.y, f.width, f.height);
             self.ui_context.rebuild_spatial_grid();
             self.needs_rebuild = false;
         }
@@ -736,15 +737,15 @@ impl Application for VaultApp {
         let pressed = state == ElementState::Pressed;
 
         if m.filter.contains(s.0, s.1) {
-            if pressed && !self.filter_input.editing {
-                self.ui_context.set_focused(&mut self.filter_input);
-                WidgetHost::focus(&mut self.filter_input);
+            if pressed && !self.ui_context[self.filter_input].editing {
+                self.ui_context.set_focused_id(self.filter_input.id());
+                WidgetHost::focus(&mut self.ui_context[self.filter_input]);
             }
             self.ui_context.propagate_event(&ev, self.filter_input.id());
             return None;
         }
-        if pressed && self.filter_input.editing {
-            self.ui_context.unfocus_widget(&mut self.filter_input);
+        if pressed && self.ui_context[self.filter_input].editing {
+            self.ui_context.unfocus_id(self.filter_input.id());
         }
         if pressed && button == MouseButton::Left {
             if m.global_chip.contains(s.0, s.1) {
@@ -816,9 +817,9 @@ impl Application for VaultApp {
     fn handle_key_input(&mut self, event: &KeyEvent, needs_rebuild: &mut bool) -> Option<Message> {
         *needs_rebuild = true;
         let pressed = event.state == ElementState::Pressed;
-        if self.filter_input.editing {
+        if self.ui_context[self.filter_input].editing {
             if pressed && matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
-                self.ui_context.unfocus_widget(&mut self.filter_input);
+                self.ui_context.unfocus_id(self.filter_input.id());
                 return None;
             }
             let ev = Event::KeyInput(event.clone());
@@ -840,8 +841,8 @@ impl Application for VaultApp {
         } else if k("fit", "ctrl+0") {
             self.fit();
         } else if k("filter", "ctrl+f") {
-            self.ui_context.set_focused(&mut self.filter_input);
-            WidgetHost::focus(&mut self.filter_input);
+            self.ui_context.set_focused_id(self.filter_input.id());
+            WidgetHost::focus(&mut self.ui_context[self.filter_input]);
         } else if k("depth_more", "ctrl+=") || k("depth_more_plus", "ctrl+shift+=") {
             self.depth = (self.depth + 1).min(4);
             self.recompute_visible();
