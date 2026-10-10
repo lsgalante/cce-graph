@@ -39,17 +39,17 @@ const POLL_EVERY: Duration = Duration::from_secs(1);
 /// A press that moves less than this is a click, not a drag.
 const CLICK_SLOP: f32 = 4.0;
 
-const FG: [f32; 4] = cce_ui::colors::TEXT_FG;
-const DIM: [f32; 4] = cce_ui::colors::TEXT_DIM;
+const FG: [f32; 4] = cce_ui::color::TEXT_FG;
+const DIM: [f32; 4] = cce_ui::color::TEXT_DIM;
 
 fn accent(alpha: f32) -> [f32; 4] {
-    let mut c = cce_ui::colors::to_linear([0.66, 0.55, 0.98, 1.0]);
+    let mut c = cce_ui::color::to_linear([0.66, 0.55, 0.98, 1.0]);
     c[3] = alpha;
     c
 }
 
 fn srgb_u8(linear: [f32; 4]) -> [u8; 3] {
-    let s = cce_ui::colors::to_srgb(linear);
+    let s = cce_ui::color::to_srgb(linear);
     [(s[0] * 255.0) as u8, (s[1] * 255.0) as u8, (s[2] * 255.0) as u8]
 }
 

@@ -783,20 +783,20 @@ impl GraphApp {
     /// The dissolved Plate's visual: config plate color (else page-low, with the drag tint),
     /// plate opacity, negative-alpha blur flag, config border and corner radius.
     fn panel_visual(&self) -> ([f32; 4], Option<([f32; 4], f32)>, f32) {
-        let mut c = if let Some(c) = cce_ui::colors::plate_color() {
+        let mut c = if let Some(c) = cce_ui::color::plate_color() {
             c
         } else if self.panel_dragging {
-            let b = cce_ui::colors::page_low_color();
+            let b = cce_ui::color::page_low_color();
             [(b[0] + 0.10).min(1.0), (b[1] + 0.15).min(1.0), (b[2] + 0.12).min(1.0), b[3]]
         } else {
-            cce_ui::colors::page_low_color()
+            cce_ui::color::page_low_color()
         };
         c[3] *= cce_ui::layout::plate_opacity();
-        if cce_ui::colors::plate_blur() {
+        if cce_ui::color::plate_blur() {
             c[3] = -c[3].abs();
         }
-        let border = cce_ui::colors::plate_border_color()
-            .map(|bc| (bc, cce_ui::colors::plate_border_thickness()));
+        let border = cce_ui::color::plate_border_color()
+            .map(|bc| (bc, cce_ui::color::plate_border_thickness()));
         (c, border, cce_ui::layout::plate_corner_radius())
     }
 
