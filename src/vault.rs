@@ -12,8 +12,6 @@
 //! The layout steps in `tick` until it cools, then the app goes idle: no
 //! frames while nothing moves.
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -25,7 +23,7 @@ use cce_ui::scene::paint::{Cap, DisplayList, PaintCtx};
 use cce_ui::widget::{
     Adapted, ElementState, Event, Key, KeyEvent, MouseButton, MouseScrollDelta, NamedKey, TextBox, WidgetHost,
 };
-use cce_vault::{Index, VaultWatcher};
+use cce_vault::{notes_ipc, Index, VaultWatcher};
 
 use crate::linkgraph::{Filter, LinkGraph};
 
@@ -111,54 +109,14 @@ fn spawn_listener(sender: calloop::channel::Sender<Message>) {
 
 // ---- cce-notes over its socket ---------------------------------------------
 
-fn notes_socket() -> String {
-    cce_ui::ipc::socket_path("cce-notes")
-}
-
-/// How long a reply from cce-notes may take before it is given up on.
+/// How long a `current` poll may wait on cce-notes before it is given up on.
 const NOTES_TIMEOUT: Duration = Duration::from_millis(300);
 
 /// The note open in cce-notes, by vault path; `None` when it is not
 /// running or has no note open. Blocks up to `NOTES_TIMEOUT`: call it off
 /// the UI thread (`VaultApp::poll_center`).
 fn notes_current() -> Option<String> {
-    let mut s = UnixStream::connect(notes_socket()).ok()?;
-    s.set_read_timeout(Some(NOTES_TIMEOUT)).ok()?;
-    s.set_write_timeout(Some(NOTES_TIMEOUT)).ok()?;
-    s.write_all(b"current\n").ok()?;
-    let mut reply = String::new();
-    BufReader::new(s).read_line(&mut reply).ok()?;
-    reply.trim().strip_prefix("ok ").map(|p| p.trim().to_string()).filter(|p| !p.is_empty())
-}
-
-/// Spawn `cmd` and reap it on a background thread, so the child never lingers
-/// as a zombie once it exits. The same helper cce-mail, cce-files, cce-terminal
-/// and cce-system-interface each keep; cce-ui's shared `process::spawn_detached`
-/// went away in cce-ui 4e94236.
-fn spawn_detached(mut cmd: std::process::Command) -> std::io::Result<()> {
-    let mut child = cmd.spawn()?;
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(())
-}
-
-/// Show a note in cce-notes: hand it to the running instance, or start one.
-fn open_in_notes(vault: &std::path::Path, abs: &std::path::Path) -> Result<(), String> {
-    let target = abs.to_string_lossy();
-    if let Ok(mut s) = UnixStream::connect(notes_socket()) {
-        // Bounded both ways: this runs on the UI thread, and a cce-notes
-        // that takes the connection but never answers froze the graph.
-        let _ = s.set_read_timeout(Some(NOTES_TIMEOUT));
-        let _ = s.set_write_timeout(Some(NOTES_TIMEOUT));
-        s.write_all(format!("open {target}\n").as_bytes()).map_err(|e| e.to_string())?;
-        let mut reply = String::new();
-        let _ = BufReader::new(s).read_line(&mut reply);
-        return Ok(());
-    }
-    let mut notes = std::process::Command::new("cce-notes");
-    notes.arg("--vault").arg(vault).arg("open").arg(abs);
-    spawn_detached(notes).map_err(|e| format!("could not start cce-notes: {e}"))
+    notes_ipc::query(notes_ipc::Query::Current, NOTES_TIMEOUT)
 }
 
 // ---- the app ---------------------------------------------------------------
@@ -169,6 +127,8 @@ pub enum Message {
     Mode { local: bool, note: Option<String> },
     /// A `current` poll of cce-notes came back (`notes_current`).
     Current(Option<String>),
+    /// cce-notes could not be started to show a note; said in the status line.
+    NotesFailed(String),
     Exit,
 }
 
@@ -436,9 +396,12 @@ impl VaultApp {
             return;
         }
         let Some(ix) = &self.index else { return };
-        if let Err(e) = open_in_notes(ix.root(), &ix.abs(&node.path)) {
-            self.status = Some(e);
-        }
+        // Off this thread: a cce-notes that takes the line and never
+        // answers must not stall the graph.
+        let tx = self.sender.clone();
+        notes_ipc::open(&ix.abs(&node.path), Some(ix.root()), move |e| {
+            let _ = tx.send(Message::NotesFailed(e));
+        });
     }
 
     /// The left button came up at `s`: a press on a node that never moved
@@ -672,6 +635,7 @@ impl Application for VaultApp {
             Message::VaultChanged(paths) => self.vault_changed(paths),
             Message::Mode { local, note } => self.set_mode(local, note),
             Message::Current(cur) => self.got_current(cur),
+            Message::NotesFailed(e) => self.status = Some(e),
             Message::Exit => *_exit = true,
         }
         *needs_rebuild = true;
