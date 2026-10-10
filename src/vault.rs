@@ -450,7 +450,7 @@ impl VaultApp {
         if self.local {
             chip(pc, m.depth_chip, &format!("Depth {}", self.depth), false);
         }
-        cce_ui::scene::painter::paint_root_into(&self.ui_context, &self.ui_context[self.filter_input], pc);
+        cce_ui::widget::painter::paint_root_into(&self.ui_context, &self.ui_context[self.filter_input], pc);
     }
 
     fn paint_status(&self, pc: &mut PaintCtx) {

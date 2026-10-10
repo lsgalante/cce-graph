@@ -1507,7 +1507,7 @@ impl Application for GraphApp {
                 &self.ui_context[self.graph],
             ];
             for top in tops {
-                cce_ui::scene::painter::paint_root_into(&self.ui_context, top, &mut pc);
+                cce_ui::widget::painter::paint_root_into(&self.ui_context, top, &mut pc);
             }
         }
 
@@ -1551,7 +1551,7 @@ impl Application for GraphApp {
                     pc.quad(rect, fill);
                 }
             }
-            cce_ui::scene::painter::paint_root_into(&self.ui_context, &self.ui_context[self.control_panel_label], &mut pc);
+            cce_ui::widget::painter::paint_root_into(&self.ui_context, &self.ui_context[self.control_panel_label], &mut pc);
         }
 
         // Open dropdown popovers — geometry and labels last, on top of everything, exactly
