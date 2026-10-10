@@ -106,8 +106,8 @@ numbers, e.g. "6l pattern", "6m recipe", document them deliberately):
 
 - **Single paint path**: everything renders in `display_list()` — relayout when
   `needs_rebuild`/resize, then the window plate is emitted as raw prims, top-level
-  widgets are walked with `paint_root_into` (shared borrows), and finally the control
-  panel and images are drawn on top. There is no `view()`; text renders from the
+  widgets are walked with `paint_root_into` (shared borrows), and finally the images
+  and then the control panel are drawn on top. There is no `view()`; text renders from the
   paint walk (`display_list_text()` returns true).
 - **No root-plate/Plate containers**: top-level widgets register **parentless** in
   `UiContext` (one-time `register_widget` block guarded by `widgets_registered`,
@@ -134,12 +134,21 @@ numbers, e.g. "6l pattern", "6m recipe", document them deliberately):
 
 ## Quirks worth knowing
 
-- Images are decoded, downscaled to max 96px on the long edge, and drawn as
-  **per-pixel quads** clipped to the graph rect — image size on the canvas is in grid
-  cells (width drives height via aspect ratio). Positions are (column, row) floats;
-  snap rounds to half-cells.
+- Images are decoded, shrunk to fit `MAX_IMAGE_DIM` (never enlarged), and drawn as
+  one mipmapped GPU image each (`cce_ui::draw::upload_rgba_mipmapped` + `pc.image`),
+  clipped to the graph rect. Uploads are lazy (`LoadedImage::texture_id`, at draw) and
+  redone when `renderer_epoch` changes; the pixels are kept for that. Image size on the
+  canvas is in grid cells (width drives height via aspect ratio). Positions are
+  (column, row) floats; snap rounds to half-cells.
+- Paint and input agree on stacking: nodes, then images, then the control panel. A
+  press tries the panel, then images, then the graph.
+- Unsaved changes: `saved_snapshot` is the state's KDL text at the last load/save;
+  New, Open, Open Recent and File › Exit go through `guard`, which asks Save /
+  Discard / Cancel (rfd → zenity, on a thread) and finishes the action from
+  `AppMessage::Answered`. Closing the window from outside is not guarded — cce-ui has
+  no close-veto hook.
 - Blocking file dialogs run on spawned threads and send results back through the
-  calloop message channel (`AppMessage::OpenRecent` / `SaveToPath` /
+  calloop message channel (`AppMessage::Load` / `SaveToPath` / `Answered` /
   `AddImageFromPath`); don't call `cce_ui::file_dialog` on the UI thread.
 - `main()` creates a tokio runtime and enters it before `engine::run` — cce-ui
   (e.g. its MCP server) expects an ambient runtime.

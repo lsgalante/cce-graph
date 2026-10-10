@@ -384,9 +384,11 @@ impl VaultApp {
             other => other,
         };
         self.graph = g;
-        // A rebuild keeps positions; it only needs a nudge, not a restart.
-        self.graph.alpha = 0.3;
         self.recompute_visible();
+        // A rebuild keeps positions; it only needs a nudge, not a restart.
+        // After `recompute_visible`, whose own reheat would otherwise leave
+        // it at 0.4 (and `build` starts it at 1.0).
+        self.graph.alpha = 0.3;
     }
 
     fn to_screen(&self, area: Rect, p: (f32, f32)) -> (f32, f32) {
@@ -980,6 +982,8 @@ mod tests {
         app.vault_changed(vec![gone]);
         assert!(app.graph.index_of("Z.md").is_none());
         assert!(matches!(app.drag, Drag::None));
+        // And a rebuild only nudges the layout.
+        assert_eq!(app.graph.alpha, 0.3);
     }
 
     #[test]

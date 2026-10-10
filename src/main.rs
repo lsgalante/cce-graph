@@ -24,6 +24,30 @@ enum AppMessage {
     AddNode,
     AddImage,
     AddImageFromPath(std::path::PathBuf),
+    /// Load a project the user picked, already past the unsaved-changes
+    /// check (`OpenRecent` is the menu's, and is checked).
+    Load(std::path::PathBuf),
+    /// The unsaved-changes prompt's answer, for the action it held back.
+    Answered(Answer, Discarding),
+}
+
+/// An action that would drop the open document, held back while the user
+/// is asked about unsaved changes (`GraphApp::guard`).
+#[derive(Debug, Clone)]
+enum Discarding {
+    New,
+    Open,
+    OpenPath(std::path::PathBuf),
+    Exit,
+}
+
+/// What the unsaved-changes prompt answered.
+#[derive(Debug, Clone)]
+enum Answer {
+    /// Save first: in place (`None`), or to the path just picked.
+    Save(Option<std::path::PathBuf>),
+    Discard,
+    Cancel,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -46,9 +70,45 @@ struct LoadedImage {
     path: String,
     position: (f32, f32),
     size: (f32, f32),
-    pixels: Vec<[u8; 4]>,
+    /// RGBA8, `pixel_width` x `pixel_height`: kept to upload again if the
+    /// renderer is rebuilt (its image ids die with it).
+    pixels: Vec<u8>,
     pixel_width: u32,
     pixel_height: u32,
+    /// The GPU image and the renderer epoch it was uploaded in; uploaded at
+    /// first draw (`display_list`), freed on drop.
+    texture: Option<(u32, u32)>,
+}
+
+impl LoadedImage {
+    fn new(path: String, position: (f32, f32), size: (f32, f32), (pixels, pixel_width, pixel_height): (Vec<u8>, u32, u32)) -> Self {
+        LoadedImage { path, position, size, pixels, pixel_width, pixel_height, texture: None }
+    }
+
+    /// The image id to draw by, uploading the pixels when this renderer has
+    /// not got them yet.
+    fn texture_id(&mut self) -> u32 {
+        let epoch = cce_ui::draw::renderer_epoch();
+        match self.texture {
+            Some((id, e)) if e == epoch => id,
+            _ => {
+                let id = cce_ui::draw::upload_rgba_mipmapped(self.pixels.clone(), self.pixel_width, self.pixel_height);
+                self.texture = Some((id, epoch));
+                id
+            }
+        }
+    }
+}
+
+impl Drop for LoadedImage {
+    fn drop(&mut self) {
+        // An id from an earlier renderer named nothing once it went.
+        if let Some((id, epoch)) = self.texture {
+            if epoch == cce_ui::draw::renderer_epoch() {
+                cce_ui::draw::free_image(id);
+            }
+        }
+    }
 }
 
 struct GraphApp {
@@ -72,6 +132,11 @@ struct GraphApp {
     /// then its parent, which relative image paths resolve against.
     state_file: Option<std::path::PathBuf>,
     loaded_images: Vec<LoadedImage>,
+    /// The document as last loaded or saved (`snapshot`): it has unsaved
+    /// changes while the current one differs.
+    saved_snapshot: String,
+    /// The unsaved-changes prompt is up; further guarded actions wait.
+    asking: bool,
     /// Whether the first layout has run.
     laid_out: bool,
     message_sender: calloop::channel::Sender<AppMessage>,
@@ -84,6 +149,9 @@ struct GraphApp {
     panel_x: f32,
     panel_y: f32,
     panel_dragging: bool,
+    /// The user has dragged the panel: a resize keeps it where it was put
+    /// rather than snapping it back to the top-right.
+    panel_moved: bool,
     panel_drag_ox: f32,
     panel_drag_oy: f32,
     show_control_panel: bool,
@@ -332,6 +400,18 @@ fn kdl_num(v: f32) -> String {
 }
 
 fn save_project_to_kdl_path(path: &std::path::Path, state: &GraphProjectState) -> Result<(), Box<dyn std::error::Error>> {
+    let kdl = project_to_kdl(state);
+    // Write beside it and rename over it, so a crash mid-write leaves the
+    // previous save intact rather than a truncated file.
+    let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = path.with_file_name(format!(".{file_name}.tmp"));
+    std::fs::write(&tmp, kdl)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// The state file's text — also the unsaved-changes snapshot.
+fn project_to_kdl(state: &GraphProjectState) -> String {
     let mut kdl = String::new();
     kdl.push_str(&format!("name {}\n", kdl_str(&state.name)));
     kdl.push_str(&format!("show_grid {}\n", state.show_grid));
@@ -363,14 +443,7 @@ fn save_project_to_kdl_path(path: &std::path::Path, state: &GraphProjectState) -
         kdl.push_str(&format!("    size {} {}\n", kdl_num(img.size.0), kdl_num(img.size.1)));
         kdl.push_str("}\n\n");
     }
-
-    // Write beside it and rename over it, so a crash mid-write leaves the
-    // previous save intact rather than a truncated file.
-    let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let tmp = path.with_file_name(format!(".{file_name}.tmp"));
-    std::fs::write(&tmp, kdl)?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    kdl
 }
 
 /// Whether `path` is a bare KDL state file rather than a project directory
@@ -467,74 +540,24 @@ fn get_view_options(show_grid: bool, opacity: f32, show_panel: bool) -> Vec<Stri
     ]
 }
 
-fn load_image_pixels(path: &std::path::Path) -> Option<(Vec<[u8; 4]>, u32, u32)> {
+/// Longest side an image is kept at. It is drawn as one GPU image (mipmapped),
+/// so this bounds memory, not draw cost.
+const MAX_IMAGE_DIM: u32 = 1024;
+
+/// Decode an image to RGBA8, shrunk to fit `MAX_IMAGE_DIM` (never enlarged).
+fn load_image_pixels(path: &std::path::Path) -> Option<(Vec<u8>, u32, u32)> {
     let img = image::open(path).ok()?;
-    let max_dim = 96;
     let (w, h) = img.dimensions();
     if w == 0 || h == 0 {
         return None;
     }
-    // At least a pixel each way: past 96:1 the short side rounds to 0, the
-    // aspect ratio goes infinite, and the size saved with it is not KDL.
-    let (nw, nh) = if w > h {
-        (max_dim, (h as f32 * (max_dim as f32 / w as f32)) as u32)
-    } else {
-        ((w as f32 * (max_dim as f32 / h as f32)) as u32, max_dim)
-    };
-    let (nw, nh) = (nw.max(1), nh.max(1));
-    let img = img.resize_exact(nw, nh, image::imageops::FilterType::Triangle);
-    let rgba = img.to_rgba8();
-    let pixels = rgba.chunks_exact(4)
-        .map(|c| [c[0], c[1], c[2], c[3]])
-        .collect();
-    Some((pixels, nw, nh))
-}
-
-fn matches_keybind(event: &KeyEvent, keybind: &str) -> bool {
-    let kb_clean = keybind.trim().to_lowercase();
-    let parts: Vec<&str> = kb_clean.split('+').collect();
-    
-    let mut has_ctrl = false;
-    let mut has_shift = false;
-    let mut main_key_str = "";
-
-    for part in &parts {
-        match *part {
-            "ctrl" => has_ctrl = true,
-            "shift" => has_shift = true,
-            "alt" | "super" => {}
-            other => main_key_str = other,
-        }
-    }
-
-    if event.ctrl != has_ctrl || event.shift != has_shift {
-        return false;
-    }
-
-    match &event.logical_key {
-        cce_ui::widget::Key::Named(nk) => {
-            let key_str = match nk {
-                cce_ui::widget::NamedKey::Backspace => "backspace",
-                cce_ui::widget::NamedKey::Tab => "tab",
-                cce_ui::widget::NamedKey::Enter => "enter",
-                cce_ui::widget::NamedKey::Space => "space",
-                cce_ui::widget::NamedKey::ArrowDown => "down",
-                cce_ui::widget::NamedKey::ArrowLeft => "left",
-                cce_ui::widget::NamedKey::ArrowRight => "right",
-                cce_ui::widget::NamedKey::ArrowUp => "up",
-                cce_ui::widget::NamedKey::End => "end",
-                cce_ui::widget::NamedKey::Home => "home",
-                cce_ui::widget::NamedKey::PageDown => "pagedown",
-                cce_ui::widget::NamedKey::PageUp => "pageup",
-                cce_ui::widget::NamedKey::Delete => "delete",
-                _ => "",
-            };
-            key_str == main_key_str
-        }
-        cce_ui::widget::Key::Character(s) => {
-            s.to_lowercase() == main_key_str
-        }
-    }
+    let scale = (MAX_IMAGE_DIM as f32 / w.max(h) as f32).min(1.0);
+    // At least a pixel each way: at an extreme aspect ratio the short side
+    // rounds to 0, the aspect ratio goes infinite, and the size saved with
+    // it is not KDL.
+    let (nw, nh) = (((w as f32 * scale) as u32).max(1), ((h as f32 * scale) as u32).max(1));
+    let img = if (nw, nh) == (w, h) { img } else { img.resize_exact(nw, nh, image::imageops::FilterType::Triangle) };
+    Some((img.to_rgba8().into_raw(), nw, nh))
 }
 
 impl GraphApp {
@@ -616,6 +639,8 @@ impl GraphApp {
             loaded_project_path: None,
             state_file: None,
             loaded_images: Vec::new(),
+            saved_snapshot: String::new(),
+            asking: false,
             laid_out: false,
             message_sender: sender,
             dragging_image_idx: None,
@@ -625,6 +650,7 @@ impl GraphApp {
             panel_x: 800.0,
             panel_y: 50.0,
             panel_dragging: false,
+            panel_moved: false,
             panel_drag_ox: 0.0,
             panel_drag_oy: 0.0,
             show_control_panel,
@@ -638,6 +664,7 @@ impl GraphApp {
         app.ui_context[app.dropdown_edit].set_rect(90.0, dd_y, 70.0, dd_h);
         app.ui_context[app.dropdown_view].set_rect(170.0, dd_y, 70.0, dd_h);
         app.ui_context[app.graph].set_rect(0.0, 42.0, 1024.0, 768.0 - 42.0);
+        app.mark_saved();
         app
     }
 
@@ -779,7 +806,110 @@ impl GraphApp {
         self.loaded_project_path = None;
         self.state_file = None;
         self.clear_selection();
+        self.mark_saved();
         self.needs_rebuild = true;
+    }
+
+    /// The document as saving it would write it, bar the name (which comes
+    /// from where it is saved).
+    fn snapshot(&self) -> String {
+        project_to_kdl(&self.project_state(None))
+    }
+
+    fn mark_saved(&mut self) {
+        self.saved_snapshot = self.snapshot();
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.snapshot() != self.saved_snapshot
+    }
+
+    /// Run `action` now if nothing would be lost; otherwise ask about the
+    /// unsaved changes first and run it from the answer (`Answered`).
+    fn guard(&mut self, action: Discarding) -> Option<Discarding> {
+        if !self.is_dirty() {
+            return Some(action);
+        }
+        if !self.asking {
+            self.asking = true;
+            self.ask_to_save(action);
+        }
+        None
+    }
+
+    /// The Save / Discard / Cancel prompt, on its own thread like the file
+    /// dialogs (it blocks); the answer comes back as `Answered`.
+    fn ask_to_save(&self, action: Discarding) {
+        let sender = self.message_sender.clone();
+        let name = self.state_file.as_ref().or(self.loaded_project_path.as_ref())
+            .and_then(|p| p.file_name())
+            .map(|n| format!("“{}”", n.to_string_lossy()))
+            .unwrap_or_else(|| "this graph".to_string());
+        let has_target = self.state_file.is_some() || self.loaded_project_path.is_some();
+        std::thread::spawn(move || {
+            let (save, discard) = ("Save".to_string(), "Discard".to_string());
+            let choice = rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Warning)
+                .set_title("Unsaved changes")
+                .set_description(format!("Save the changes to {name} first?"))
+                .set_buttons(rfd::MessageButtons::YesNoCancelCustom(save.clone(), discard.clone(), "Cancel".to_string()))
+                .show();
+            let answer = match choice {
+                rfd::MessageDialogResult::Custom(c) if c == save => {
+                    if has_target {
+                        Answer::Save(None)
+                    } else {
+                        match cce_ui::file_dialog::save_file("Save CCE Graph Project", &[]) {
+                            Some(path) => Answer::Save(Some(path)),
+                            None => Answer::Cancel,
+                        }
+                    }
+                }
+                rfd::MessageDialogResult::Custom(c) if c == discard => Answer::Discard,
+                _ => Answer::Cancel,
+            };
+            let _ = sender.send(AppMessage::Answered(answer, action));
+        });
+    }
+
+    /// Carry out an action the unsaved-changes check let through.
+    fn perform(&mut self, action: Discarding, exit: &mut bool) {
+        match action {
+            Discarding::New => self.new_project(),
+            Discarding::Open => {
+                let sender = self.message_sender.clone();
+                std::thread::spawn(move || {
+                    if let Some(path) = cce_ui::file_dialog::pick_file("Open CCE Graph Project", &[]) {
+                        let _ = sender.send(AppMessage::Load(path));
+                    }
+                });
+            }
+            Discarding::OpenPath(path) => self.open_path(&path),
+            Discarding::Exit => *exit = true,
+        }
+    }
+
+    fn open_path(&mut self, path: &std::path::Path) {
+        if let Err(e) = self.load_project_from_path(path) {
+            eprintln!("Failed to load project: {:?}", e);
+        } else {
+            self.add_recent_file(path);
+        }
+    }
+
+    /// Start a new document that Save will write to `path`, which does not
+    /// exist yet: a bare state file for a `.kdl` path, else a project
+    /// directory — as an editor given a new file name opens it empty.
+    fn new_project_at(&mut self, path: &std::path::Path) {
+        self.new_project();
+        if path.file_name().is_some_and(|n| n == "state.kdl") {
+            self.loaded_project_path = path.parent().map(|p| p.to_path_buf());
+        } else if is_bare_state_file(path) {
+            self.loaded_project_path = path.parent().map(|p| p.to_path_buf());
+            self.state_file = Some(path.to_path_buf());
+        } else {
+            self.loaded_project_path = Some(path.to_path_buf());
+        }
     }
 
     /// Forget what is selected or held. Selections are indices, so one kept
@@ -817,7 +947,14 @@ impl GraphApp {
     fn save_in_place(&mut self) -> Option<Result<std::path::PathBuf, Box<dyn std::error::Error>>> {
         if let Some(file) = self.state_file.clone() {
             let state = self.project_state(file.file_stem());
-            return Some(save_project_to_kdl_path(&file, &state).map(|()| file));
+            let saved = file.parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .map_err(Into::into)
+                .and_then(|()| save_project_to_kdl_path(&file, &state));
+            if saved.is_ok() {
+                self.mark_saved();
+            }
+            return Some(saved.map(|()| file));
         }
         let dir = self.loaded_project_path.clone()?;
         Some(self.save_project_to_path(&dir).map(|()| dir))
@@ -848,6 +985,7 @@ impl GraphApp {
 
         self.loaded_project_path = Some(project_dir.to_path_buf());
         self.state_file = None;
+        self.mark_saved();
         self.needs_rebuild = true;
         Ok(())
     }
@@ -927,15 +1065,8 @@ impl GraphApp {
                 project_dir.join(&img.path)
             };
 
-            if let Some((pixels, pw, ph)) = load_image_pixels(&image_path) {
-                self.loaded_images.push(LoadedImage {
-                    path: img.path.clone(),
-                    position: img.position,
-                    size: img.size,
-                    pixels,
-                    pixel_width: pw,
-                    pixel_height: ph,
-                });
+            if let Some(decoded) = load_image_pixels(&image_path) {
+                self.loaded_images.push(LoadedImage::new(img.path.clone(), img.position, img.size, decoded));
             } else {
                 eprintln!("Warning: Failed to load image at {:?}", image_path);
             }
@@ -950,39 +1081,35 @@ impl GraphApp {
 
         self.loaded_project_path = Some(project_dir);
         self.state_file = is_bare_state_file(path).then(|| path.to_path_buf());
+        self.mark_saved();
         self.needs_rebuild = true;
         Ok(())
     }
 
-    fn hit_test_image(&self, px: f32, py: f32) -> Option<usize> {
+    /// Where an image is on screen, (x, y, w, h): placed by grid cell, as
+    /// wide as its `size.0` columns, as tall as its aspect ratio makes it.
+    fn image_screen_rect(&self, img: &LoadedImage) -> (f32, f32, f32, f32) {
         let (grid_origin_x, grid_origin_y) = self.ui_context[self.graph].grid_origin();
         let (grid_size_x, grid_size_y) = self.ui_context[self.graph].grid_sizes();
         let (skipped_row_h, skipped_col_w) = self.ui_context[self.graph].skipped_sizes();
-        
-        let step_x = grid_size_x + skipped_col_w;
-        let step_y = grid_size_y + skipped_row_h;
-        
-        for (i, img) in self.loaded_images.iter().enumerate().rev() {
-            let col = img.position.0;
-            let row = img.position.1;
-            
-            let screen_x = grid_origin_x + col * step_x;
-            let screen_y = grid_origin_y + row * step_y;
-            
-            let screen_w = img.size.0 * grid_size_x + (img.size.0 - 1.0).max(0.0) * skipped_col_w;
-            let aspect = img.pixel_height as f32 / img.pixel_width as f32;
-            let screen_h = screen_w * aspect;
-            
-            if px >= screen_x && px <= screen_x + screen_w && py >= screen_y && py <= screen_y + screen_h {
-                return Some(i);
-            }
-        }
-        None
+        let x = grid_origin_x + img.position.0 * (grid_size_x + skipped_col_w);
+        let y = grid_origin_y + img.position.1 * (grid_size_y + skipped_row_h);
+        let w = img.size.0 * grid_size_x + (img.size.0 - 1.0).max(0.0) * skipped_col_w;
+        let h = w * img.pixel_height as f32 / img.pixel_width as f32;
+        (x, y, w, h)
+    }
+
+    /// The topmost image at a point.
+    fn hit_test_image(&self, px: f32, py: f32) -> Option<usize> {
+        self.loaded_images.iter().rposition(|img| {
+            let (x, y, w, h) = self.image_screen_rect(img);
+            px >= x && px <= x + w && py >= y && py <= y + h
+        })
     }
 
     fn add_image(&mut self, src_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
         // Decode first, so a file that is not an image is not copied in.
-        let Some((pixels, pw, ph)) = load_image_pixels(src_path) else {
+        let Some(decoded) = load_image_pixels(src_path) else {
             return Err(format!("{} is not an image cce-graph can read", src_path.display()).into());
         };
         let final_path = if let Some(ref project_dir) = self.loaded_project_path {
@@ -991,21 +1118,14 @@ impl GraphApp {
             src_path.to_string_lossy().to_string()
         };
 
-        let aspect = ph as f32 / pw as f32;
+        let aspect = decoded.2 as f32 / decoded.1 as f32;
         let size_w = 4.0;
         let size_h = size_w * aspect;
 
         let col = 2.0;
         let row = 2.0 + self.loaded_images.len() as f32 * 5.0;
 
-        self.loaded_images.push(LoadedImage {
-            path: final_path,
-            position: (col, row),
-            size: (size_w, size_h),
-            pixels,
-            pixel_width: pw,
-            pixel_height: ph,
-        });
+        self.loaded_images.push(LoadedImage::new(final_path, (col, row), (size_w, size_h), decoded));
         self.needs_rebuild = true;
         Ok(())
     }
@@ -1041,6 +1161,11 @@ impl Application for GraphApp {
                 } else {
                     app.add_recent_file(&path);
                 }
+            } else {
+                // Not a typo to swallow silently: say so, and make it the
+                // place Save writes.
+                eprintln!("cce-graph: nothing at {}; starting a new graph there (Save creates it)", path.display());
+                app.new_project_at(&path);
             }
         } else {
             let default_path = get_default_project_path();
@@ -1073,24 +1198,50 @@ impl Application for GraphApp {
 
     fn update(&mut self, msg: Self::Message, needs_rebuild: &mut bool, exit: &mut bool) {
         match msg {
-            AppMessage::New => {
-                self.new_project();
+            AppMessage::New | AppMessage::Open | AppMessage::OpenRecent(_) | AppMessage::Exit => {
+                let action = match msg {
+                    AppMessage::New => Discarding::New,
+                    AppMessage::Open => Discarding::Open,
+                    AppMessage::OpenRecent(path) => Discarding::OpenPath(path),
+                    _ => Discarding::Exit,
+                };
+                if let Some(action) = self.guard(action) {
+                    self.perform(action, exit);
+                }
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }
-            AppMessage::Open => {
-                let sender = self.message_sender.clone();
-                std::thread::spawn(move || {
-                    if let Some(path) = cce_ui::file_dialog::pick_file("Open CCE Graph Project", &[]) {
-                        let _ = sender.send(AppMessage::OpenRecent(path));
-                    }
-                });
+            AppMessage::Load(path) => {
+                self.open_path(&path);
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
             }
-            AppMessage::OpenRecent(path) => {
-                if let Err(e) = self.load_project_from_path(&path) {
-                    eprintln!("Failed to load project: {:?}", e);
-                } else {
-                    self.add_recent_file(&path);
+            AppMessage::Answered(answer, action) => {
+                self.asking = false;
+                let proceed = match answer {
+                    Answer::Cancel => false,
+                    Answer::Discard => true,
+                    Answer::Save(to) => {
+                        let saved = match to {
+                            Some(dir) => self.save_project_to_path(&dir).map(|()| dir),
+                            None => self.save_in_place().unwrap_or_else(|| Err("nowhere to save to".into())),
+                        };
+                        match saved {
+                            Ok(path) => {
+                                if path != get_default_project_path() {
+                                    self.add_recent_file(&path);
+                                }
+                                true
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to save project: {:?}", e);
+                                false
+                            }
+                        }
+                    }
+                };
+                if proceed {
+                    self.perform(action, exit);
                 }
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
@@ -1131,9 +1282,6 @@ impl Application for GraphApp {
                 }
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
-            }
-            AppMessage::Exit => {
-                *exit = true;
             }
             AppMessage::ToggleGrid => {
                 self.show_grid = !self.show_grid;
@@ -1327,10 +1475,15 @@ impl Application for GraphApp {
             // Layout Graph below MenuBar
             self.ui_context[self.graph].set_rect(0.0, 42.0, size.width, size.height - 42.0);
 
-            // Initial control panel positioning (bounds are clamped at drag time)
-            if size_changed || is_first_layout {
+            // The control panel sits top-right until the user moves it; after
+            // that a resize keeps it where it was put, pulled back inside.
+            if !self.panel_moved && (size_changed || is_first_layout) {
                 self.panel_x = (size.width - 230.0).max(10.0);
                 self.panel_y = 55.0; // Float below MenuBar
+            } else if size_changed {
+                let (_, _, pw, ph) = self.panel_rect();
+                self.panel_x = self.panel_x.clamp(0.0, (size.width - pw).max(0.0));
+                self.panel_y = self.panel_y.clamp(42.0, (size.height - ph).max(42.0));
             }
             self.position_panel_label();
             
@@ -1358,7 +1511,31 @@ impl Application for GraphApp {
             }
         }
 
-        // The dissolved control panel, on top: its plate as prims, then the label walked.
+        // Images over the nodes, under the control panel, clipped to the
+        // canvas: one GPU image each.
+        {
+            use cce_ui::scene::layout::Rect;
+            let (gx, gy, gw, gh) = self.ui_context[self.graph].rect();
+            let rects: Vec<(f32, f32, f32, f32)> = self.loaded_images.iter().map(|img| self.image_screen_rect(img)).collect();
+            let selected = self.selected_image_idx;
+            let images = &mut self.loaded_images;
+            pc.clip(Rect { x: gx, y: gy, width: gw, height: gh }, |pc| {
+                for (i, (img, &(x, y, w, h))) in images.iter_mut().zip(&rects).enumerate() {
+                    pc.image(img.texture_id(), Rect { x, y, width: w, height: h }, 1.0);
+                    if Some(i) == selected {
+                        // A cyan selection outline just outside the image.
+                        let (t, c) = (2.0, [0.0, 0.75, 1.0, 1.0]);
+                        pc.quad(Rect { x: x - t, y: y - t, width: w + 2.0 * t, height: t }, c);
+                        pc.quad(Rect { x: x - t, y: y + h, width: w + 2.0 * t, height: t }, c);
+                        pc.quad(Rect { x: x - t, y, width: t, height: h }, c);
+                        pc.quad(Rect { x: x + w, y, width: t, height: h }, c);
+                    }
+                }
+            });
+        }
+
+        // The dissolved control panel, on top of the images too (it takes the
+        // clicks there): its plate as prims, then the label walked.
         if self.show_control_panel {
             use cce_ui::scene::layout::Rect;
             let (px, py, pw, ph) = self.panel_rect();
@@ -1375,77 +1552,6 @@ impl Application for GraphApp {
                 }
             }
             cce_ui::scene::painter::paint_root_into(&self.ui_context, &self.ui_context[self.control_panel_label], &mut pc);
-        }
-
-        // Draw foreground images in the graph grid (above nodes, fully opaque, preserving aspect ratio)
-        let (grid_origin_x, grid_origin_y) = self.ui_context[self.graph].grid_origin();
-        let (grid_size_x, grid_size_y) = self.ui_context[self.graph].grid_sizes();
-        let (skipped_row_h, skipped_col_w) = self.ui_context[self.graph].skipped_sizes();
-        
-        let step_x = grid_size_x + skipped_col_w;
-        let step_y = grid_size_y + skipped_row_h;
-
-        let (graph_x, graph_y, graph_w, graph_h) = self.ui_context[self.graph].rect();
-        let min_x = graph_x;
-        let min_y = graph_y;
-        let max_x = graph_x + graph_w;
-        let max_y = graph_y + graph_h;
-
-        let push_clipped = |qx: f32, qy: f32, qw: f32, qh: f32, qc: [f32; 4], q: &mut cce_ui::scene::paint::PaintCtx| {
-            let rx1 = qx.max(min_x);
-            let ry1 = qy.max(min_y);
-            let rx2 = (qx + qw).min(max_x);
-            let ry2 = (qy + qh).min(max_y);
-            let rw = rx2 - rx1;
-            let rh = ry2 - ry1;
-            if rw > 0.0 && rh > 0.0 {
-                q.quad(cce_ui::scene::layout::Rect { x: rx1, y: ry1, width: rw, height: rh }, qc);
-            }
-        };
-
-        for (i, img) in self.loaded_images.iter().enumerate() {
-            let col = img.position.0;
-            let row = img.position.1;
-            
-            let screen_x = grid_origin_x + col * step_x;
-            let screen_y = grid_origin_y + row * step_y;
-            
-            let screen_w = img.size.0 * grid_size_x + (img.size.0 - 1.0).max(0.0) * skipped_col_w;
-            let aspect = img.pixel_height as f32 / img.pixel_width as f32;
-            let screen_h = screen_w * aspect;
-            
-            let px_w = screen_w / img.pixel_width as f32;
-            let px_h = screen_h / img.pixel_height as f32;
-            
-            for y in 0..img.pixel_height {
-                for x in 0..img.pixel_width {
-                    let idx = (y * img.pixel_width + x) as usize;
-                    let rgba = img.pixels[idx];
-                    let r = rgba[0] as f32 / 255.0;
-                    let g = rgba[1] as f32 / 255.0;
-                    let b = rgba[2] as f32 / 255.0;
-                    let a = rgba[3] as f32 / 255.0;
-                    
-                    let px_x = screen_x + (x as f32) * px_w;
-                    let px_y = screen_y + (y as f32) * px_h;
-                    
-                    push_clipped(px_x, px_y, px_w + 0.5, px_h + 0.5, [r, g, b, a], &mut pc);
-                }
-            }
-
-            if Some(i) == self.selected_image_idx {
-                let border_thickness = 2.0;
-                let border_color = [0.0, 0.75, 1.0, 1.0]; // Vibrant cyan selection outline
-                
-                // Top border
-                push_clipped(screen_x - border_thickness, screen_y - border_thickness, screen_w + 2.0 * border_thickness, border_thickness, border_color, &mut pc);
-                // Bottom border
-                push_clipped(screen_x - border_thickness, screen_y + screen_h, screen_w + 2.0 * border_thickness, border_thickness, border_color, &mut pc);
-                // Left border
-                push_clipped(screen_x - border_thickness, screen_y, border_thickness, screen_h, border_color, &mut pc);
-                // Right border
-                push_clipped(screen_x + screen_w, screen_y, border_thickness, screen_h, border_color, &mut pc);
-            }
         }
 
         // Open dropdown popovers — geometry and labels last, on top of everything, exactly
@@ -1515,6 +1621,7 @@ impl Application for GraphApp {
                     if (nx - self.panel_x).abs() > 0.01 || (ny - self.panel_y).abs() > 0.01 {
                         self.panel_x = nx;
                         self.panel_y = ny;
+                        self.panel_moved = true;
                         self.position_panel_label();
                         changed = true;
                     }
@@ -1667,11 +1774,24 @@ impl Application for GraphApp {
                 // Otherwise route to Graph
                 if button == MouseButton::Left {
                     if state == ElementState::Pressed {
-                        // Routed press: a node grab records the drag target; the router
-                        // synthesizes DragStart past its threshold (the old immediate
-                        // drag_begin call).
-                        let g = self.graph.id();
-                        if self.ui_context.propagate_event(&ev, g) {
+                        if let Some(img_idx) = self.hit_test_image(pos.x, pos.y) {
+                            // Images are drawn over the nodes, so they take the
+                            // press first — not the node hidden under them.
+                            let (ix, iy, _, _) = self.image_screen_rect(&self.loaded_images[img_idx]);
+                            self.dragging_image_idx = Some(img_idx);
+                            self.drag_image_ox = pos.x - ix;
+                            self.drag_image_oy = pos.y - iy;
+                            self.selected_image_idx = Some(img_idx);
+                            self.ui_context[self.graph].set_selected_node(None);
+                            changed = true;
+                        } else {
+                            // Routed press: a node grab records the drag target; the router
+                            // synthesizes DragStart past its threshold (the old immediate
+                            // drag_begin call).
+                            let g = self.graph.id();
+                            if !self.ui_context.propagate_event(&ev, g) {
+                                self.ui_context[self.graph].set_selected_node(None);
+                            }
                             self.selected_image_idx = None;
                             changed = true;
                             // A press on a port can complete a wire drawn
@@ -1684,27 +1804,6 @@ impl Application for GraphApp {
                                     self.ui_context[self.graph].set_nodes(&nodes);
                                 }
                             }
-                        } else if let Some(img_idx) = self.hit_test_image(pos.x, pos.y) {
-                            let img = &self.loaded_images[img_idx];
-                            let (grid_origin_x, grid_origin_y) = self.ui_context[self.graph].grid_origin();
-                            let (grid_size_x, grid_size_y) = self.ui_context[self.graph].grid_sizes();
-                            let (skipped_row_h, skipped_col_w) = self.ui_context[self.graph].skipped_sizes();
-                            let step_x = grid_size_x + skipped_col_w;
-                            let step_y = grid_size_y + skipped_row_h;
-
-                            let img_screen_x = grid_origin_x + img.position.0 * step_x;
-                            let img_screen_y = grid_origin_y + img.position.1 * step_y;
-
-                            self.dragging_image_idx = Some(img_idx);
-                            self.drag_image_ox = pos.x - img_screen_x;
-                            self.drag_image_oy = pos.y - img_screen_y;
-                            self.selected_image_idx = Some(img_idx);
-                            self.ui_context[self.graph].set_selected_node(None);
-                            changed = true;
-                        } else {
-                            self.selected_image_idx = None;
-                            self.ui_context[self.graph].set_selected_node(None);
-                            changed = true;
                         }
                     } else if state == ElementState::Released {
                         // (An image drag's release is handled up top.) The router
@@ -1729,9 +1828,17 @@ impl Application for GraphApp {
     }
 
     fn handle_mouse_wheel(&mut self, delta: &MouseScrollDelta, pos: LogicalPosition, needs_rebuild: &mut bool) {
-        let ev = Event::MouseWheel { delta: *delta, x: pos.x as f32, y: pos.y as f32, local_x: pos.x as f32, local_y: pos.y as f32 };
-        let g = self.graph.id();
-        if self.ui_context.propagate_event(&ev, g) {
+        let ev = Event::MouseWheel { delta: *delta, x: pos.x, y: pos.y, local_x: pos.x, local_y: pos.y };
+        // While a menu is open the wheel is its (a long recent-files list
+        // scrolls), never the canvas behind it.
+        let open_menu = [self.dropdown_file, self.dropdown_edit, self.dropdown_view]
+            .into_iter()
+            .find(|&h| self.ui_context[h].open);
+        let root = match open_menu {
+            Some(h) => h.id(),
+            None => self.graph.id(),
+        };
+        if self.ui_context.propagate_event(&ev, root) {
             *needs_rebuild = true;
             self.needs_rebuild = true;
         }
@@ -1767,13 +1874,16 @@ impl Application for GraphApp {
                     .or_else(|| self.drain_edit_menu())
                     .or_else(|| self.drain_view_menu());
             }
+            // The open menu has the keyboard even for keys it ignores: Delete
+            // fell through and deleted the selected node behind it.
+            return None;
         }
 
         if event.state == ElementState::Pressed {
             // input.kdl `cce-graph.delete_node`, falling back to the legacy
             // config.kdl graph `delete` prop.
             let delete_keybind = cce_ui::input::app_chord("delete_node", &cce_ui::layout::graph_node_delete());
-            if matches_keybind(event, &delete_keybind) {
+            if cce_ui::widget::match_key_shortcut(event, &delete_keybind) {
                 self.delete_selected_node();
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
@@ -1881,13 +1991,148 @@ mod tests {
     #[test]
     fn extreme_aspect_images_keep_a_pixel_each_way() {
         let dir = tempfile::tempdir().unwrap();
-        for (w, h) in [(5, 1000), (1000, 5), (1, 1)] {
+        for (w, h) in [(5, 5000), (5000, 5), (1, 1)] {
             let p = dir.path().join(format!("{w}x{h}.png"));
             png(&p, w, h);
             let (pixels, pw, ph) = load_image_pixels(&p).unwrap();
             assert!(pw >= 1 && ph >= 1, "{w}x{h} -> {pw}x{ph}");
-            assert_eq!(pixels.len(), (pw * ph) as usize);
+            assert_eq!(pixels.len(), (pw * ph * 4) as usize);
         }
+    }
+
+    #[test]
+    fn images_shrink_to_fit_but_never_grow() {
+        let dir = tempfile::tempdir().unwrap();
+        for ((w, h), want) in [((40, 30), (40, 30)), ((4096, 1024), (MAX_IMAGE_DIM, 256))] {
+            let p = dir.path().join(format!("{w}x{h}.png"));
+            png(&p, w, h);
+            let (_, pw, ph) = load_image_pixels(&p).unwrap();
+            assert_eq!((pw, ph), want);
+        }
+    }
+
+    #[test]
+    fn an_image_takes_the_press_over_the_node_under_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("cover.png");
+        png(&src, 40, 40);
+        let mut a = app();
+        a.add_image(&src).unwrap();
+        let mut n = node("under", vec![]);
+        n.position = a.loaded_images[0].position;
+        a.ui_context[a.graph].set_nodes(&[n]);
+
+        let (x, y, _, _) = a.image_screen_rect(&a.loaded_images[0]);
+        let at = LogicalPosition { x: x + 10.0, y: y + 10.0 };
+        let (press, release) = (ElementState::Pressed, ElementState::Released);
+        let mut rebuild = false;
+        // The node really is under that point: with the image out of the
+        // way, the press selects it.
+        let image = a.loaded_images.pop().unwrap();
+        a.handle_mouse_input(MouseButton::Left, press, at, &mut rebuild);
+        a.handle_mouse_input(MouseButton::Left, release, at, &mut rebuild);
+        assert_eq!(a.ui_context[a.graph].selected_node(), Some(0));
+        a.loaded_images.push(image);
+
+        a.handle_mouse_input(MouseButton::Left, press, at, &mut rebuild);
+        assert_eq!(a.selected_image_idx, Some(0));
+        assert_eq!(a.dragging_image_idx, Some(0));
+        assert_eq!(a.ui_context[a.graph].selected_node(), None);
+    }
+
+    #[test]
+    fn a_moved_panel_stays_put_across_a_resize() {
+        let mut a = app();
+        a.display_list(LogicalSize { width: 1200.0, height: 800.0 }, 1.0);
+        assert_eq!(a.panel_x, 1200.0 - 230.0, "top-right until moved");
+        a.display_list(LogicalSize { width: 1400.0, height: 800.0 }, 1.0);
+        assert_eq!(a.panel_x, 1400.0 - 230.0, "unmoved, it follows the right edge");
+
+        (a.panel_x, a.panel_y, a.panel_moved) = (300.0, 200.0, true);
+        a.display_list(LogicalSize { width: 1300.0, height: 900.0 }, 1.0);
+        assert_eq!((a.panel_x, a.panel_y), (300.0, 200.0));
+        // A window too small for it pulls it back inside.
+        a.display_list(LogicalSize { width: 400.0, height: 300.0 }, 1.0);
+        assert_eq!((a.panel_x, a.panel_y), (400.0 - 210.0, 300.0 - 160.0));
+    }
+
+    #[test]
+    fn an_open_menu_keeps_the_wheel_and_the_keys() {
+        let mut a = app();
+        a.ui_context[a.graph].set_nodes(&[node("kept", vec![])]);
+        a.ui_context[a.graph].set_selected_node(Some(0));
+        a.ui_context[a.dropdown_file].open = true;
+        let mut rebuild = false;
+
+        let origin = a.ui_context[a.graph].grid_origin();
+        a.handle_mouse_wheel(&MouseScrollDelta::LineDelta(0.0, -3.0), LogicalPosition { x: 500.0, y: 400.0 }, &mut rebuild);
+        assert_eq!(a.ui_context[a.graph].grid_origin(), origin, "the canvas did not scroll");
+
+        let delete = KeyEvent {
+            state: ElementState::Pressed,
+            logical_key: cce_ui::widget::Key::Named(cce_ui::widget::NamedKey::Delete),
+            text: None,
+            repeat: false,
+            ctrl: false,
+            shift: false,
+            alt: false,
+        };
+        a.handle_key_input(&delete, &mut rebuild);
+        assert_eq!(a.ui_context[a.graph].get_nodes().len(), 1, "Delete behind an open menu");
+
+        // With the menu closed the same key deletes — when it is the
+        // binding (input.kdl may rebind it).
+        let chord = cce_ui::input::app_chord("delete_node", &cce_ui::layout::graph_node_delete());
+        if chord.eq_ignore_ascii_case("delete") {
+            a.ui_context[a.dropdown_file].open = false;
+            a.handle_key_input(&delete, &mut rebuild);
+            assert!(a.ui_context[a.graph].get_nodes().is_empty());
+        }
+    }
+
+    #[test]
+    fn unsaved_changes_are_tracked() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = app();
+        assert!(!a.is_dirty(), "a fresh graph");
+        assert!(matches!(a.guard(Discarding::New), Some(Discarding::New)), "nothing to lose: no prompt");
+
+        a.ui_context[a.graph].set_nodes(&[node("x", vec![])]);
+        assert!(a.is_dirty());
+        a.save_project_to_path(&dir.path().join("p")).unwrap();
+        assert!(!a.is_dirty(), "saved");
+
+        a.show_grid = !a.show_grid;
+        assert!(a.is_dirty(), "view settings are saved with the project");
+        a.load_project_from_path(&dir.path().join("p")).unwrap();
+        assert!(!a.is_dirty(), "reloaded");
+
+        // The prompt's answers: Cancel keeps everything, Discard goes ahead.
+        a.ui_context[a.graph].set_nodes(&[node("y", vec![])]);
+        let (mut rebuild, mut exit) = (false, false);
+        a.asking = true;
+        a.update(AppMessage::Answered(Answer::Cancel, Discarding::Exit), &mut rebuild, &mut exit);
+        assert!(!exit && !a.asking && a.is_dirty());
+        a.update(AppMessage::Answered(Answer::Discard, Discarding::New), &mut rebuild, &mut exit);
+        assert!(a.ui_context[a.graph].get_nodes().is_empty() && !a.is_dirty());
+        a.update(AppMessage::Answered(Answer::Discard, Discarding::Exit), &mut rebuild, &mut exit);
+        assert!(exit);
+    }
+
+    #[test]
+    fn a_path_that_does_not_exist_is_where_save_creates_the_graph() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = app();
+        let file = dir.path().join("new/board.kdl");
+        a.new_project_at(&file);
+        a.ui_context[a.graph].set_nodes(&[node("x", vec![])]);
+        assert_eq!(a.save_in_place().unwrap().unwrap(), file);
+        assert!(file.exists() && !a.is_dirty());
+
+        let project = dir.path().join("fresh");
+        a.new_project_at(&project);
+        a.save_in_place().unwrap().unwrap();
+        assert!(project.join("state.kdl").exists());
     }
 
     #[test]
