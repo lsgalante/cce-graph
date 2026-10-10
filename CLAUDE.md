@@ -76,8 +76,17 @@ needs a running Wayland session — ideally the `cce` compositor.
   `save_project_to_kdl_path` (top-level `name`/`show_grid`/`opacity`, then `node` and `image` blocks). Keep
   both functions in sync when changing it. A `uniform_background` line in an
   older save is ignored: the graph has had no fill of its own since 2026-09-29.
+- Values go through `kdl_str` / `kdl_num` (the kdl crate's own escaping; non-finite
+  numbers as 0) — never Rust's `{:?}`, which writes escapes KDL rejects and loses the
+  whole file. Saves write a temp file and rename it over the old one.
 - With no CLI arg, the app loads (creating if missing)
   `~/.config/cce/cce-graph/default.kdl` — a bare KDL state file, not a project dir.
+  Any `.kdl` other than `state.kdl` opened directly is the same: `state_file` holds
+  it, Save writes back to it, and its folder is what relative image paths resolve
+  against.
+- Images: Add Image decodes first, then `import_asset` copies into `assets/` — a file
+  already there is referenced in place, a name clash gets `-2`, `-3`… Save As copies
+  the relative assets to the new directory (`copy_relative_assets`).
 - View settings persist to the **shared** `~/.config/cce/config.kdl` under
   `layout` (`graph_show_grid`, `graph_snap_enabled`, `graph_network_opacity`,
   `graph_gap_width`) — see
