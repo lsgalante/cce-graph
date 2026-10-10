@@ -720,7 +720,7 @@ impl Application for VaultApp {
             self.needs_rebuild = false;
         }
         let mut pc = PaintCtx::new();
-        pc.root_plate(size.width as f32, size.height as f32);
+        pc.root_plate(size.width, size.height);
         self.paint_graph(&mut pc, m.area);
         self.paint_band(&mut pc, &m);
         self.paint_status(&mut pc);
@@ -751,7 +751,7 @@ impl Application for VaultApp {
     }
 
     fn handle_pointer_move(&mut self, pos: LogicalPosition, needs_rebuild: &mut bool) {
-        let s = (pos.x as f32, pos.y as f32);
+        let s = (pos.x, pos.y);
         self.pointer = s;
         let area = self.metrics().area;
         match &mut self.drag {
@@ -799,7 +799,7 @@ impl Application for VaultApp {
         pos: LogicalPosition,
         needs_rebuild: &mut bool,
     ) -> Option<Message> {
-        let s = (pos.x as f32, pos.y as f32);
+        let s = (pos.x, pos.y);
         *needs_rebuild = true;
         let m = self.metrics();
         let ev = Event::MouseButton { button, state, x: s.0, y: s.1, local_x: s.0, local_y: s.1 };
@@ -864,7 +864,7 @@ impl Application for VaultApp {
     }
 
     fn handle_mouse_wheel(&mut self, delta: &MouseScrollDelta, pos: LogicalPosition, needs_rebuild: &mut bool) {
-        let s = (pos.x as f32, pos.y as f32);
+        let s = (pos.x, pos.y);
         if !self.metrics().area.contains(s.0, s.1) {
             return;
         }

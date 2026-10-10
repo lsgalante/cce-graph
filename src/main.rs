@@ -1042,7 +1042,7 @@ impl GraphApp {
             (path.to_path_buf(), path.parent().unwrap_or(path).to_path_buf())
         };
 
-        let state: GraphProjectState = if state_file_path.extension().map_or(false, |ext| ext == "kdl") {
+        let state: GraphProjectState = if state_file_path.extension().is_some_and(|ext| ext == "kdl") {
             load_project_from_kdl_path(&state_file_path)?
         } else {
             let content = std::fs::read_to_string(&state_file_path)?;

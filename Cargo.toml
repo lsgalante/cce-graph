@@ -21,3 +21,8 @@ cce-vault = { git = "https://github.com/lsgalante/cce-vault.git", rev = "acf0e24
 [dev-dependencies]
 tempfile = "3"
 
+
+[lints.clippy]
+# The toolkit's house style (cce-ui's [lints.clippy]): geometry, colour and paint state
+# taken piecewise, and the legacy tuple views.
+type_complexity = "allow"
