@@ -115,11 +115,16 @@ fn notes_socket() -> String {
     cce_ui::ipc::socket_path("cce-notes")
 }
 
+/// How long a reply from cce-notes may take before it is given up on.
+const NOTES_TIMEOUT: Duration = Duration::from_millis(300);
+
 /// The note open in cce-notes, by vault path; `None` when it is not
-/// running or has no note open.
+/// running or has no note open. Blocks up to `NOTES_TIMEOUT`: call it off
+/// the UI thread (`VaultApp::poll_center`).
 fn notes_current() -> Option<String> {
     let mut s = UnixStream::connect(notes_socket()).ok()?;
-    s.set_read_timeout(Some(Duration::from_millis(300))).ok()?;
+    s.set_read_timeout(Some(NOTES_TIMEOUT)).ok()?;
+    s.set_write_timeout(Some(NOTES_TIMEOUT)).ok()?;
     s.write_all(b"current\n").ok()?;
     let mut reply = String::new();
     BufReader::new(s).read_line(&mut reply).ok()?;
@@ -130,6 +135,10 @@ fn notes_current() -> Option<String> {
 fn open_in_notes(vault: &std::path::Path, abs: &std::path::Path) -> Result<(), String> {
     let target = abs.to_string_lossy();
     if let Ok(mut s) = UnixStream::connect(notes_socket()) {
+        // Bounded both ways: this runs on the UI thread, and a cce-notes
+        // that takes the connection but never answers froze the graph.
+        let _ = s.set_read_timeout(Some(NOTES_TIMEOUT));
+        let _ = s.set_write_timeout(Some(NOTES_TIMEOUT));
         s.write_all(format!("open {target}\n").as_bytes()).map_err(|e| e.to_string())?;
         let mut reply = String::new();
         let _ = BufReader::new(s).read_line(&mut reply);
@@ -151,6 +160,8 @@ fn open_in_notes(vault: &std::path::Path, abs: &std::path::Path) -> Result<(), S
 pub enum Message {
     VaultChanged(Vec<PathBuf>),
     Mode { local: bool, note: Option<String> },
+    /// A `current` poll of cce-notes came back (`notes_current`).
+    Current(Option<String>),
     Exit,
 }
 
@@ -172,6 +183,10 @@ pub struct VaultApp {
     /// The local graph's centre, by vault path.
     center: Option<String>,
     next_poll: Instant,
+    /// A `current` poll is running on its own thread; its answer arrives as
+    /// `Message::Current`.
+    poll_in_flight: bool,
+    sender: calloop::channel::Sender<Message>,
 
     filter_input: Handle<Adapted<TextBox>>,
     filter_seen: String,
@@ -205,6 +220,48 @@ struct Metrics {
 }
 
 impl VaultApp {
+    /// The app over an opened vault (or the error opening it), in global
+    /// mode — `create` then applies the launch's mode; tests start here.
+    fn new(
+        index: Option<Index>,
+        error: Option<String>,
+        watcher: Option<VaultWatcher>,
+        sender: calloop::channel::Sender<Message>,
+    ) -> VaultApp {
+        let graph = index.as_ref().map(|ix| LinkGraph::build(ix, None)).unwrap_or_default();
+        let n = graph.len();
+        // The context owns the widgets; the app keeps their handles.
+        let mut ui_context = cce_ui::context::UiContext::new();
+        VaultApp {
+            index,
+            error,
+            _watcher: watcher,
+            graph,
+            visible: vec![true; n],
+            local: false,
+            depth: 1,
+            center: None,
+            next_poll: Instant::now(),
+            poll_in_flight: false,
+            sender,
+            filter_input: ui_context.insert(TextBox::new(String::new()).with_placeholder("Filter: words, #tag, path:")),
+            filter_seen: String::new(),
+            cam: (0.0, 0.0),
+            zoom: 1.0,
+            fit_pending: true,
+            refit_on_settle: true,
+            hover: None,
+            drag: Drag::None,
+            pointer: (0.0, 0.0),
+            status: None,
+            width: 1000,
+            height: 700,
+            needs_rebuild: true,
+            ui_context,
+            widgets_registered: false,
+        }
+    }
+
     fn metrics(&self) -> Metrics {
         let (w, h) = (self.width as f32, self.height as f32);
         let inset = cce_ui::layout::root_plate_inset();
@@ -262,17 +319,24 @@ impl VaultApp {
         if let Some(n) = note {
             self.center = self.index.as_ref().and_then(|ix| ix.lookup(&n)).or(Some(n));
         }
-        if local && self.center.is_none() {
-            self.center = notes_current();
-        }
         self.local = local;
+        if local && self.center.is_none() {
+            // Ask cce-notes now rather than at the next poll.
+            self.next_poll = Instant::now();
+            self.poll_center();
+        }
         self.recompute_visible();
         self.fit_pending = true;
         self.refit_on_settle = true;
     }
 
+    /// Ask cce-notes which note is open, once a second in local mode. The
+    /// socket round trip runs on its own thread (it can take up to
+    /// `NOTES_TIMEOUT`, which on the UI thread was a stall every second
+    /// while cce-notes was busy); the answer comes back as
+    /// `Message::Current`.
     fn poll_center(&mut self) {
-        if !self.local {
+        if !self.local || self.poll_in_flight {
             return;
         }
         let now = Instant::now();
@@ -280,12 +344,20 @@ impl VaultApp {
             return;
         }
         self.next_poll = now + POLL_EVERY;
-        if let Some(cur) = notes_current() {
-            if self.center.as_deref() != Some(cur.as_str()) {
-                self.center = Some(cur);
-                self.recompute_visible();
-                self.fit_pending = true;
-            }
+        self.poll_in_flight = true;
+        let tx = self.sender.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Message::Current(notes_current()));
+        });
+    }
+
+    fn got_current(&mut self, cur: Option<String>) {
+        self.poll_in_flight = false;
+        let Some(cur) = cur.filter(|_| self.local) else { return };
+        if self.center.as_deref() != Some(cur.as_str()) {
+            self.center = Some(cur);
+            self.recompute_visible();
+            self.fit_pending = true;
         }
     }
 
@@ -293,6 +365,17 @@ impl VaultApp {
         let Some(ix) = self.index.as_mut() else { return };
         ix.apply_changes(&paths);
         let g = LinkGraph::build(ix, Some(&self.graph));
+        // A node drag holds an index, which the rebuild reorders: follow the
+        // node by path, or let go if its note is gone. Kept as it was, the
+        // drag moved (or a click opened) another note, or indexed past the
+        // end and panicked.
+        self.drag = match std::mem::replace(&mut self.drag, Drag::None) {
+            Drag::Node { i, from, moved } => match g.index_of(&self.graph.nodes[i].path) {
+                Some(i) => Drag::Node { i, from, moved },
+                None => Drag::None,
+            },
+            other => other,
+        };
         self.graph = g;
         // A rebuild keeps positions; it only needs a nudge, not a restart.
         self.graph.alpha = 0.3;
@@ -349,6 +432,16 @@ impl VaultApp {
         if let Err(e) = open_in_notes(ix.root(), &ix.abs(&node.path)) {
             self.status = Some(e);
         }
+    }
+
+    /// The left button came up at `s`: a press on a node that never moved
+    /// was a click, and opens it.
+    fn end_drag(&mut self, s: (f32, f32)) {
+        if let Drag::Node { i, moved: false, .. } = self.drag {
+            self.open(i);
+        }
+        self.drag = Drag::None;
+        self.hover = self.node_at(s);
     }
 
     fn paint_band(&self, pc: &mut PaintCtx, m: &Metrics) {
@@ -551,36 +644,7 @@ impl Application for VaultApp {
             Err(e) => (None, Some(e), None),
         };
         spawn_listener(sender.clone());
-        let graph = index.as_ref().map(|ix| LinkGraph::build(ix, None)).unwrap_or_default();
-        let n = graph.len();
-        // The context owns the widgets; the app keeps their handles.
-        let mut ui_context = cce_ui::context::UiContext::new();
-        let mut app = VaultApp {
-            index,
-            error,
-            _watcher: watcher,
-            graph,
-            visible: vec![true; n],
-            local: false,
-            depth: 1,
-            center: None,
-            next_poll: Instant::now(),
-            filter_input: ui_context.insert(TextBox::new(String::new()).with_placeholder("Filter: words, #tag, path:")),
-            filter_seen: String::new(),
-            cam: (0.0, 0.0),
-            zoom: 1.0,
-            fit_pending: true,
-            refit_on_settle: true,
-            hover: None,
-            drag: Drag::None,
-            pointer: (0.0, 0.0),
-            status: None,
-            width: 1000,
-            height: 700,
-            needs_rebuild: true,
-            ui_context,
-            widgets_registered: false,
-        };
+        let mut app = VaultApp::new(index, error, watcher, sender);
         app.set_mode(args.local, args.note.clone());
         app
     }
@@ -600,6 +664,7 @@ impl Application for VaultApp {
         match msg {
             Message::VaultChanged(paths) => self.vault_changed(paths),
             Message::Mode { local, note } => self.set_mode(local, note),
+            Message::Current(cur) => self.got_current(cur),
             Message::Exit => *_exit = true,
         }
         *needs_rebuild = true;
@@ -736,6 +801,14 @@ impl Application for VaultApp {
         let ev = Event::MouseButton { button, state, x: s.0, y: s.1, local_x: s.0, local_y: s.1 };
         let pressed = state == ElementState::Pressed;
 
+        // A drag ends on release wherever it lands. Over the filter box the
+        // release went to the box instead, and the pan or node stayed stuck
+        // to the pointer with no button held.
+        if button == MouseButton::Left && !pressed && !matches!(self.drag, Drag::None) {
+            self.end_drag(s);
+            return None;
+        }
+
         if m.filter.contains(s.0, s.1) {
             if pressed && !self.ui_context[self.filter_input].editing {
                 self.ui_context.set_focused_id(self.filter_input.id());
@@ -774,13 +847,7 @@ impl Application for VaultApp {
                 };
                 self.status = None;
             }
-            (MouseButton::Left, ElementState::Released) => {
-                if let Drag::Node { i, moved: false, .. } = self.drag {
-                    self.open(i);
-                }
-                self.drag = Drag::None;
-                self.hover = self.node_at(s);
-            }
+            (MouseButton::Left, ElementState::Released) => self.end_drag(s),
             (MouseButton::Right, ElementState::Pressed) => {
                 if let Some(i) = self.node_at(s) {
                     self.graph.nodes[i].pinned = false;
@@ -874,6 +941,51 @@ mod tests {
 
     fn args(a: &[&str]) -> Vec<String> {
         a.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn app_over(files: &[(&str, &str)]) -> (tempfile::TempDir, VaultApp) {
+        let dir = tempfile::tempdir().unwrap();
+        for (p, t) in files {
+            std::fs::write(dir.path().join(p), t).unwrap();
+        }
+        let ix = Index::open(dir.path(), false).unwrap();
+        let (tx, _rx) = calloop::channel::channel();
+        (dir, VaultApp::new(Some(ix), None, None, tx))
+    }
+
+    #[test]
+    fn a_drag_follows_its_note_across_a_rebuild() {
+        let (dir, mut app) = app_over(&[("A.md", "[[Z]]"), ("B.md", ""), ("Z.md", "")]);
+        let z = app.graph.index_of("Z.md").unwrap();
+        app.drag = Drag::Node { i: z, from: (0.0, 0.0), moved: true };
+
+        // A note that sorts before Z shifts its index.
+        let m = dir.path().join("M.md");
+        std::fs::write(&m, "").unwrap();
+        app.vault_changed(vec![m]);
+        let z2 = app.graph.index_of("Z.md").unwrap();
+        assert_ne!(z, z2);
+        assert!(matches!(app.drag, Drag::Node { i, .. } if i == z2));
+
+        // Its note gone, the drag lets go rather than holding a stale index.
+        let gone = dir.path().join("Z.md");
+        std::fs::remove_file(&gone).unwrap();
+        app.vault_changed(vec![gone]);
+        assert!(app.graph.index_of("Z.md").is_none());
+        assert!(matches!(app.drag, Drag::None));
+    }
+
+    #[test]
+    fn a_release_over_the_filter_box_ends_the_drag() {
+        let (_dir, mut app) = app_over(&[("A.md", "")]);
+        let f = app.metrics().filter;
+        let over_filter = LogicalPosition { x: f.x + f.width / 2.0, y: f.y + f.height / 2.0 };
+        let mut rebuild = false;
+        for drag in [Drag::Pan { last: (500.0, 300.0) }, Drag::Node { i: 0, from: (0.0, 0.0), moved: true }] {
+            app.drag = drag;
+            app.handle_mouse_input(MouseButton::Left, ElementState::Released, over_filter, &mut rebuild);
+            assert!(matches!(app.drag, Drag::None));
+        }
     }
 
     #[test]

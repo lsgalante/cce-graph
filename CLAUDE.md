@@ -41,7 +41,9 @@ editor.
   has panned or zoomed.
 - **Local graph:** N hops (Depth chip, Ctrl+=/−) around the note open in
   cce-notes, polled once a second as `current` on cce-notes' instance
-  socket (`idle_poll_interval` runs only in local mode). A click on a node
+  socket (`idle_poll_interval` runs only in local mode). The poll runs on
+  its own thread and answers as `Message::Current` — keep socket round
+  trips off the UI thread, and give any that stay on it a timeout. A click on a node
   sends `open <abs path>` over that socket, or launches cce-notes.
 - **Single instance** on `/tmp/cce-graph-vault-<display>.sock`; a second
   launch forwards `local [note]` / `global` and exits — cce-notes' Ctrl+G

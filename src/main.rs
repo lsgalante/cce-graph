@@ -701,18 +701,9 @@ impl GraphApp {
         if let Some(idx) = self.ui_context[self.graph].selected_node() {
             let mut nodes = self.ui_context[self.graph].get_nodes();
             if idx < nodes.len() {
-                let deleted_node_name = nodes[idx].name.clone();
-                nodes.remove(idx);
-                
-                // Clear inputs/parameters of other nodes pointing to this deleted node name
-                for node in &mut nodes {
-                    for param in &mut node.parameters {
-                        if param.1 == deleted_node_name {
-                            param.1 = String::new();
-                        }
-                    }
-                }
-                
+                let deleted = nodes.remove(idx);
+                wiring::disconnect(&mut nodes, &deleted.name);
+
                 self.ui_context[self.graph].set_nodes(&nodes);
                 self.ui_context[self.graph].set_selected_node(None);
                 self.needs_rebuild = true;
@@ -787,7 +778,16 @@ impl GraphApp {
         self.loaded_images.clear();
         self.loaded_project_path = None;
         self.state_file = None;
+        self.clear_selection();
         self.needs_rebuild = true;
+    }
+
+    /// Forget what is selected or held. Selections are indices, so one kept
+    /// across New/Open lands on whatever now sits there, and Delete deletes it.
+    fn clear_selection(&mut self) {
+        self.selected_image_idx = None;
+        self.dragging_image_idx = None;
+        self.ui_context[self.graph].set_selected_node(None);
     }
 
     /// The document as saved.
@@ -914,6 +914,7 @@ impl GraphApp {
         let mut nodes = state.nodes.clone();
         wiring::ensure_ids(&mut nodes);
         self.ui_context[self.graph].set_nodes(&nodes);
+        self.clear_selection();
         self.show_grid = state.show_grid;
         self.opacity = state.opacity;
 
@@ -1175,9 +1176,10 @@ impl Application for GraphApp {
             AppMessage::AddNode => {
                 let mut nodes = self.ui_context[self.graph].get_nodes();
                 let next_id = nodes.len() + 1;
+                let name = wiring::fresh_name(&nodes);
                 nodes.push(GraphNode {
                     id: String::new(),
-                    name: format!("Node {}", next_id),
+                    name,
                     position: (2.0 + (next_id % 3) as f32, 2.0 + (next_id / 3) as f32),
                     parameters: vec![],
                     geom_visible: true,
@@ -1593,6 +1595,20 @@ impl Application for GraphApp {
             return None;
         }
 
+        // The app-owned drags end on release wherever it lands. Routed by
+        // position, a release over the menu bar went to the dropdowns and the
+        // panel or image stayed stuck to the pointer with no button held.
+        // (Node drags are the router's: it delivers DragEnd from any root.)
+        if button == MouseButton::Left && state == ElementState::Released
+            && (self.panel_dragging || self.dragging_image_idx.is_some())
+        {
+            self.panel_dragging = false;
+            self.dragging_image_idx = None;
+            *needs_rebuild = true;
+            self.needs_rebuild = true;
+            return None;
+        }
+
         let over_menu = self.ui_context[self.dropdown_file].open || self.ui_context[self.dropdown_edit].open || self.ui_context[self.dropdown_view].open
             || self.ui_context[self.dropdown_file].hit_test(pos.x, pos.y, &self.ui_context)
             || self.ui_context[self.dropdown_edit].hit_test(pos.x, pos.y, &self.ui_context)
@@ -1637,21 +1653,12 @@ impl Application for GraphApp {
         } else {
             let mut handled_by_panel = false;
             if self.show_control_panel && (self.panel_dragging || self.panel_hit(pos.x, pos.y)) {
-                if button == MouseButton::Left {
-                    match state {
-                        ElementState::Pressed => {
-                            self.panel_dragging = true;
-                            self.panel_drag_ox = pos.x - self.panel_x;
-                            self.panel_drag_oy = pos.y - self.panel_y;
-                            changed = true;
-                        }
-                        ElementState::Released => {
-                            if self.panel_dragging {
-                                self.panel_dragging = false;
-                                changed = true;
-                            }
-                        }
-                    }
+                // (The release that ends the drag is handled up top.)
+                if button == MouseButton::Left && state == ElementState::Pressed {
+                    self.panel_dragging = true;
+                    self.panel_drag_ox = pos.x - self.panel_x;
+                    self.panel_drag_oy = pos.y - self.panel_y;
+                    changed = true;
                 }
                 handled_by_panel = true;
             }
@@ -1700,17 +1707,13 @@ impl Application for GraphApp {
                             changed = true;
                         }
                     } else if state == ElementState::Released {
-                        if self.dragging_image_idx.is_some() {
-                            self.dragging_image_idx = None;
+                        // (An image drag's release is handled up top.) The router
+                        // delivers DragEnd (commit) before the release reaches
+                        // Graph; a committed drag leaves the release arm inert.
+                        let was_dragging = self.ui_context.is_dragging;
+                        let g = self.graph.id();
+                        if self.ui_context.propagate_event(&ev, g) || was_dragging {
                             changed = true;
-                        } else {
-                            // The router delivers DragEnd (commit) before the release
-                            // reaches Graph; a committed drag leaves the release arm inert.
-                            let was_dragging = self.ui_context.is_dragging;
-                            let g = self.graph.id();
-                            if self.ui_context.propagate_event(&ev, g) || was_dragging {
-                                changed = true;
-                            }
                         }
                     }
                 }
@@ -1944,6 +1947,36 @@ mod tests {
         b.load_project_from_path(&second).unwrap();
         assert_eq!(b.loaded_images.len(), 1, "the image survives Save As and reload");
         assert!(second.join("assets/photo.png").exists());
+    }
+
+    #[test]
+    fn app_owned_drags_end_on_a_release_over_the_menu_bar() {
+        let mut a = app();
+        let over_bar = LogicalPosition { x: 600.0, y: 20.0 };
+        let mut rebuild = false;
+        a.show_control_panel = true;
+        a.panel_dragging = true;
+        a.handle_mouse_input(MouseButton::Left, ElementState::Released, over_bar, &mut rebuild);
+        assert!(!a.panel_dragging);
+
+        a.dragging_image_idx = Some(0);
+        a.handle_mouse_input(MouseButton::Left, ElementState::Released, over_bar, &mut rebuild);
+        assert!(a.dragging_image_idx.is_none());
+    }
+
+    #[test]
+    fn opening_a_project_drops_the_old_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("empty.kdl");
+        std::fs::write(&file, "").unwrap();
+        let mut a = app();
+        a.selected_image_idx = Some(0);
+        a.dragging_image_idx = Some(0);
+        a.load_project_from_path(&file).unwrap();
+        assert_eq!((a.selected_image_idx, a.dragging_image_idx), (None, None));
+        a.selected_image_idx = Some(0);
+        a.new_project();
+        assert_eq!(a.selected_image_idx, None);
     }
 
     #[test]

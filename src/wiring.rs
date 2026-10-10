@@ -26,6 +26,31 @@ pub fn ensure_ids(nodes: &mut [GraphNode]) {
     }
 }
 
+/// A name no node has yet: `Node {n}`, counting up from one past the node
+/// count. Wires reference names, so two nodes sharing one share every wire
+/// to either — and deleting one cut the other's.
+pub fn fresh_name(nodes: &[GraphNode]) -> String {
+    let taken: std::collections::HashSet<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
+    (nodes.len() + 1..).map(|n| format!("Node {n}")).find(|name| !taken.contains(name.as_str())).unwrap()
+}
+
+/// Cut every wire from the node named `name`: blank the parameters
+/// `node_wires` reads as wires (the `node`-typed ones, else the one named
+/// `input`) where they name it. Other parameters are left alone, even when
+/// their value happens to equal the name.
+pub fn disconnect(nodes: &mut [GraphNode], name: &str) {
+    for node in nodes {
+        let any_typed = node.parameters.iter().any(|p| p.2 == "node");
+        let untyped_input = node.parameters.iter().position(|p| p.0.eq_ignore_ascii_case("input"));
+        for (i, p) in node.parameters.iter_mut().enumerate() {
+            let is_wire = if any_typed { p.2 == "node" } else { Some(i) == untyped_input };
+            if is_wire && p.1.trim() == name {
+                p.1 = String::new();
+            }
+        }
+    }
+}
+
 /// Wire `from` (a node name) into input `port` of the node with id `to`.
 /// Writes the value of that port's parameter — the port-th `node`-typed
 /// one, or the `input` parameter for port 0 of a node that has no typed
@@ -113,6 +138,31 @@ mod tests {
         assert_eq!(node_wires(&nodes[0]), ["y"]);
         assert!(connect(&mut nodes, "n1", "z", 1));
         assert_eq!(node_wires(&nodes[0]), ["y", "z"]);
+    }
+
+    #[test]
+    fn fresh_names_skip_ones_in_use() {
+        // After "Node 2" of three was deleted, len + 1 is "Node 3" — taken.
+        let nodes = vec![node("n1", "Node 1", vec![]), node("n3", "Node 3", vec![])];
+        assert_eq!(fresh_name(&nodes), "Node 4");
+        assert_eq!(fresh_name(&[]), "Node 1");
+    }
+
+    #[test]
+    fn disconnect_cuts_wires_only() {
+        let mut nodes = vec![
+            // Typed wires: both cut; a string that equals the name is kept.
+            node("n1", "x", vec![("input", "a", "node"), ("input2", " a ", "node"), ("label", "a", "string")]),
+            // Untyped: the `input` parameter is the wire.
+            node("n2", "y", vec![("Input", "a", "string"), ("note", "a", "string")]),
+            node("n3", "z", vec![("input", "b", "node")]),
+        ];
+        disconnect(&mut nodes, "a");
+        assert_eq!(node_wires(&nodes[0]), ["", ""]);
+        assert_eq!(nodes[0].parameters[2].1, "a");
+        assert_eq!(node_wires(&nodes[1]), [""]);
+        assert_eq!(nodes[1].parameters[1].1, "a");
+        assert_eq!(node_wires(&nodes[2]), ["b"]);
     }
 
     #[test]
