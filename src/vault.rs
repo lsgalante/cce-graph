@@ -131,6 +131,18 @@ fn notes_current() -> Option<String> {
     reply.trim().strip_prefix("ok ").map(|p| p.trim().to_string()).filter(|p| !p.is_empty())
 }
 
+/// Spawn `cmd` and reap it on a background thread, so the child never lingers
+/// as a zombie once it exits. The same helper cce-mail, cce-files, cce-terminal
+/// and cce-system-interface each keep; cce-ui's shared `process::spawn_detached`
+/// went away in cce-ui 4e94236.
+fn spawn_detached(mut cmd: std::process::Command) -> std::io::Result<()> {
+    let mut child = cmd.spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 /// Show a note in cce-notes: hand it to the running instance, or start one.
 fn open_in_notes(vault: &std::path::Path, abs: &std::path::Path) -> Result<(), String> {
     let target = abs.to_string_lossy();
@@ -144,14 +156,9 @@ fn open_in_notes(vault: &std::path::Path, abs: &std::path::Path) -> Result<(), S
         let _ = BufReader::new(s).read_line(&mut reply);
         return Ok(());
     }
-    std::process::Command::new("cce-notes")
-        .arg("--vault")
-        .arg(vault)
-        .arg("open")
-        .arg(abs)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("could not start cce-notes: {e}"))
+    let mut notes = std::process::Command::new("cce-notes");
+    notes.arg("--vault").arg(vault).arg("open").arg(abs);
+    spawn_detached(notes).map_err(|e| format!("could not start cce-notes: {e}"))
 }
 
 // ---- the app ---------------------------------------------------------------
