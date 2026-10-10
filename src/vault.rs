@@ -214,7 +214,6 @@ pub struct VaultApp {
     height: u32,
     needs_rebuild: bool,
     ui_context: cce_ui::context::UiContext,
-    widgets_registered: bool,
 }
 
 /// Where the band's controls sit.
@@ -265,7 +264,6 @@ impl VaultApp {
             height: 700,
             needs_rebuild: true,
             ui_context,
-            widgets_registered: false,
         }
     }
 
@@ -710,9 +708,6 @@ impl Application for VaultApp {
     }
 
     fn display_list(&mut self, size: LogicalSize, scale: f64) -> Option<DisplayList> {
-        if !self.widgets_registered {
-            self.widgets_registered = true;
-        }
         let resized = self.width != size.width as u32 || self.height != size.height as u32;
         self.width = size.width as u32;
         self.height = size.height as u32;

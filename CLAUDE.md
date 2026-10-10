@@ -109,10 +109,13 @@ numbers, e.g. "6l pattern", "6m recipe", document them deliberately):
   widgets are walked with `paint_root_into` (shared borrows), and finally the images
   and then the control panel are drawn on top. There is no `view()`; text renders from the
   paint walk (`display_list_text()` returns true).
-- **No root-plate/Plate containers**: top-level widgets register **parentless** in
-  `UiContext` (one-time `register_widget` block guarded by `widgets_registered`,
-  using raw pointers — the widgets must stay owned fields of `GraphApp` so those
-  pointers stay valid). The former control-panel Plate is "dissolved": its rect,
+- **No root-plate/Plate containers**: the `UiContext` owns every widget.
+  `GraphApp::with_sender` builds each top-level widget and hands it to
+  `ui_context.insert`, which registers it **parentless** and returns a `Handle`;
+  the app keeps only the handles (`menu_bar`, `dropdown_*`, `graph`,
+  `control_panel_label`) and reaches the widget as `self.ui_context[handle]`.
+  Routing takes `handle.id()` as its root; painting walks `&self.ui_context[handle]`.
+  The former control-panel Plate is "dissolved": its rect,
   drag state, and visual are app fields (`panel_*`, `panel_visual()`), its plate is
   emitted as prims, and only its `Label` is a real walked widget.
 - **Popovers are ui_context-only**: open dropdowns call
