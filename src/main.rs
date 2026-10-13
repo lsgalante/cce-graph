@@ -4,7 +4,7 @@ mod linkgraph;
 mod vault;
 mod wiring;
 
-use cce_ui::widget::{Adapted, MouseButton, ElementState, MouseScrollDelta, KeyEvent, WidgetHost, Event, Graph, GraphNode, MenuBar, GraphController, Dropdown, Label};
+use cce_ui::widget::{Adapted, MouseButton, ElementState, MouseScrollDelta, KeyEvent, WidgetEvent, WidgetHost, Event, Graph, GraphNode, MenuBar, GraphController, Dropdown, Label};
 use image::GenericImageView;
 
 #[derive(Debug, Clone)]
@@ -520,7 +520,7 @@ fn copy_relative_assets<'a>(
     Ok(())
 }
 
-/// The View menu's rows, dispatched by INDEX (`drain_view_menu`). Its list
+/// The View menu's rows, dispatched by INDEX (`view_menu_pick`). Its list
 /// is a `Dropdown`, which draws the context menu's marks as glyphs: the two
 /// switches wear `MARK_CHECK` while on, and the opacities are a radio group
 /// (`MARK_ON` on the one in use, `MARK_OFF` on the rest).
@@ -668,59 +668,70 @@ impl GraphApp {
         app
     }
 
-    /// Drain a consumed file-menu interaction into its message — shared by the
-    /// mouse path and the key path so a selection means the same thing however
-    /// it was made. Keeps the sentinel `selected = 999` protocol.
-    fn drain_file_menu(&mut self) -> Option<AppMessage> {
+    /// What the menus picked since the last sweep (`UiContext::take_events`),
+    /// as its message — shared by the mouse path and the key path so a
+    /// selection means the same thing however it was made. Run where a menu
+    /// took an event, the only ways one is picked from. Should two menus
+    /// report at once, File's pick wins, then Edit's.
+    fn drain_menus(&mut self) -> Option<AppMessage> {
         let mut msg = None;
-        if self.ui_context[self.dropdown_file].take_change() {
-            let selected_idx = self.ui_context[self.dropdown_file].selected;
-            if selected_idx < self.ui_context[self.dropdown_file].options.len() {
-                let option_text = &self.ui_context[self.dropdown_file].options[selected_idx];
-                match option_text.as_str() {
-                    "New" => msg = Some(AppMessage::New),
-                    "Open" | "Open..." => msg = Some(AppMessage::Open),
-                    "Save" => msg = Some(AppMessage::Save),
-                    "Save As" => msg = Some(AppMessage::SaveAs),
-                    "Exit" => msg = Some(AppMessage::Exit),
-                    "-" => {}
-                    _ => {
-                        let path = std::path::PathBuf::from(option_text);
-                        msg = Some(AppMessage::OpenRecent(path));
-                    }
+        for (id, ev) in self.ui_context.take_events() {
+            let picked = match ev {
+                WidgetEvent::Changed if id == self.dropdown_file.id() => self.file_menu_pick(),
+                WidgetEvent::Changed if id == self.dropdown_edit.id() => self.edit_menu_pick(),
+                WidgetEvent::Changed if id == self.dropdown_view.id() => self.view_menu_pick(),
+                _ => None,
+            };
+            msg = msg.or(picked);
+        }
+        msg
+    }
+
+    /// The File menu's picked row as its message. Keeps the sentinel
+    /// `selected = 999` protocol: every menu goes back to "nothing chosen"
+    /// after a pick, so picking the same row again is a change again.
+    fn file_menu_pick(&mut self) -> Option<AppMessage> {
+        let mut msg = None;
+        let selected_idx = self.ui_context[self.dropdown_file].selected;
+        if selected_idx < self.ui_context[self.dropdown_file].options.len() {
+            let option_text = &self.ui_context[self.dropdown_file].options[selected_idx];
+            match option_text.as_str() {
+                "New" => msg = Some(AppMessage::New),
+                "Open" | "Open..." => msg = Some(AppMessage::Open),
+                "Save" => msg = Some(AppMessage::Save),
+                "Save As" => msg = Some(AppMessage::SaveAs),
+                "Exit" => msg = Some(AppMessage::Exit),
+                "-" => {}
+                _ => {
+                    let path = std::path::PathBuf::from(option_text);
+                    msg = Some(AppMessage::OpenRecent(path));
                 }
             }
-            self.ui_context[self.dropdown_file].selected = 999;
         }
+        self.ui_context[self.dropdown_file].selected = 999;
         msg
     }
 
-    fn drain_edit_menu(&mut self) -> Option<AppMessage> {
-        let mut msg = None;
-        if self.ui_context[self.dropdown_edit].take_change() {
-            match self.ui_context[self.dropdown_edit].selected {
-                0 => msg = Some(AppMessage::AddNode),
-                1 => msg = Some(AppMessage::AddImage),
-                _ => {}
-            }
-            self.ui_context[self.dropdown_edit].selected = 999;
-        }
+    fn edit_menu_pick(&mut self) -> Option<AppMessage> {
+        let msg = match self.ui_context[self.dropdown_edit].selected {
+            0 => Some(AppMessage::AddNode),
+            1 => Some(AppMessage::AddImage),
+            _ => None,
+        };
+        self.ui_context[self.dropdown_edit].selected = 999;
         msg
     }
 
-    fn drain_view_menu(&mut self) -> Option<AppMessage> {
-        let mut msg = None;
-        if self.ui_context[self.dropdown_view].take_change() {
-            match self.ui_context[self.dropdown_view].selected {
-                0 => msg = Some(AppMessage::ToggleGrid),
-                1 => msg = Some(AppMessage::SetOpacity95),
-                2 => msg = Some(AppMessage::SetOpacity75),
-                3 => msg = Some(AppMessage::SetOpacity50),
-                4 => msg = Some(AppMessage::ToggleControlPanel),
-                _ => {}
-            }
-            self.ui_context[self.dropdown_view].selected = 999;
-        }
+    fn view_menu_pick(&mut self) -> Option<AppMessage> {
+        let msg = match self.ui_context[self.dropdown_view].selected {
+            0 => Some(AppMessage::ToggleGrid),
+            1 => Some(AppMessage::SetOpacity95),
+            2 => Some(AppMessage::SetOpacity75),
+            3 => Some(AppMessage::SetOpacity50),
+            4 => Some(AppMessage::ToggleControlPanel),
+            _ => None,
+        };
+        self.ui_context[self.dropdown_view].selected = 999;
         msg
     }
 
@@ -1724,26 +1735,13 @@ impl Application for GraphApp {
 
         let ev = Event::MouseButton { button, state, x: pos.x, y: pos.y, local_x: pos.x, local_y: pos.y };
         if over_menu {
-            let dd_file = self.dropdown_file.id();
-            if self.ui_context.propagate_event(&ev, dd_file) {
-                changed = true;
-                if let Some(m) = self.drain_file_menu() {
-                    msg_out = Some(m);
+            for dd in [self.dropdown_file.id(), self.dropdown_edit.id(), self.dropdown_view.id()] {
+                if self.ui_context.propagate_event(&ev, dd) {
+                    changed = true;
                 }
             }
-            let dd_edit = self.dropdown_edit.id();
-            if self.ui_context.propagate_event(&ev, dd_edit) {
-                changed = true;
-                if let Some(m) = self.drain_edit_menu() {
-                    msg_out = Some(m);
-                }
-            }
-            let dd_view = self.dropdown_view.id();
-            if self.ui_context.propagate_event(&ev, dd_view) {
-                changed = true;
-                if let Some(m) = self.drain_view_menu() {
-                    msg_out = Some(m);
-                }
+            if changed {
+                msg_out = self.drain_menus();
             }
 
             // Outside-press dismissal. The engine already sweeps open popovers
@@ -1869,10 +1867,7 @@ impl Application for GraphApp {
             if self.ui_context.propagate_event(&kev, root) {
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
-                return self
-                    .drain_file_menu()
-                    .or_else(|| self.drain_edit_menu())
-                    .or_else(|| self.drain_view_menu());
+                return self.drain_menus();
             }
             // The open menu has the keyboard even for keys it ignores: Delete
             // fell through and deleted the selected node behind it.

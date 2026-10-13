@@ -128,8 +128,9 @@ numbers, e.g. "6l pattern", "6m recipe", document them deliberately):
   `is_dragging` forces rebuilds mid-drag, and DragEnd commits before the release
   reaches `Graph`.
 - **Dropdown selection protocol**: menu dropdowns use sentinel `selected = 999`
-  ("nothing chosen"); on `take_change()` the app maps the selected option to an
-  `AppMessage` and resets to 999. File-menu entries are matched by option **text**
+  ("nothing chosen"); on a menu's `WidgetEvent::Changed` (`drain_menus`, one
+  `UiContext::take_events` sweep after a menu took a press or key) the app maps
+  the selected option to an `AppMessage` and resets to 999. File-menu entries are matched by option **text**
   (recent-file paths are pushed straight into `options`), so renaming an entry means
   updating the match arm.
 - **Rebuild flags are dual**: handlers set both the `*needs_rebuild` out-param (frame
