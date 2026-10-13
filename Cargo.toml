@@ -16,7 +16,7 @@ serde_json = "1"
 image = { version = "0.25.10", features = ["png", "jpeg"] }
 kdl = "4.6"
 rfd = "0.15"
-cce-vault = { git = "https://github.com/lsgalante/cce-vault.git", rev = "9697535b1721d00efb6e0cfc88c2349072d5f5bd" }
+cce-vault = { git = "https://github.com/lsgalante/cce-vault.git", rev = "ee2f46e35206779ad4fd5e4a1bdade01bde61977" }
 
 [dev-dependencies]
 tempfile = "3"
