@@ -1575,7 +1575,7 @@ impl Application for GraphApp {
                 if popover.popover_rect().is_none() {
                     continue;
                 }
-                // PaintCtx is a RenderTarget: the popover draws its real prims
+                // The popover paints into the frame's PaintCtx: its real prims
                 // (the dropdown's expanded inset-plate surface) with its own
                 // per-label bounds — no flattening collector round-trip.
                 popover.render_popover(&mut pc);
