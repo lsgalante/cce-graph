@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 environment: a grid-aligned canvas of connected nodes plus free-floating images, saved
 as KDL project directories. It is one crate of the multi-repo `cce` workspace (its own
 git repo side-by-side with its siblings; `origin` is GitHub and a post-commit hook
-pushes each commit, with git.lucas.co an hourly mirror). Read the workspace-level
+pushes each commit). Read the workspace-level
 `../cce-compositor/WORKSPACE.md` first — workspace layout, the `cce-ui` toolkit, config
 conventions, and the multi-repo rules (each crate is its own git repo; commit here, not at
 the workspace root) all live there.
