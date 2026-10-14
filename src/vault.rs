@@ -56,8 +56,9 @@ const THUMB_PX: u32 = 256;
 const FG: [f32; 4] = cce_ui::color::TEXT_FG;
 const DIM: [f32; 4] = cce_ui::color::TEXT_DIM;
 
+/// The DE's accent (config `highlight primary`, cyan by default) at `alpha`.
 fn accent(alpha: f32) -> [f32; 4] {
-    let mut c = cce_ui::color::to_linear([0.66, 0.55, 0.98, 1.0]);
+    let mut c = cce_ui::color::highlight_primary_color();
     c[3] = alpha;
     c
 }
