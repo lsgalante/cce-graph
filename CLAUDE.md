@@ -119,7 +119,7 @@ numbers, e.g. "6l pattern", "6m recipe", document them deliberately):
   drag state, and visual are app fields (`panel_*`, `panel_visual()`), its plate is
   emitted as prims, and only its `Label` is a real walked widget.
 - **Popovers are ui_context-only**: open dropdowns call
-  `ui_context.register_popover` each frame. Do NOT also register them globally —
+  `ui_context.register_popover_id(id)` each frame. Do NOT also register them globally —
   that spawns a render-only xdg popup that swallows clicks on the open menu.
 - **Routed events**: input goes through `ui_context.propagate_event(&event, root_id)`
   with `WidgetId` roots (dropdowns get priority when `over_menu`; otherwise the
