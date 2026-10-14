@@ -34,6 +34,12 @@ editor.
 - **Model:** a node per note plus a grey ghost per link target that does
   not exist; one edge per linked pair. Built from `cce_vault::Index`, and
   rebuilt on every watcher batch keeping positions and pins.
+- **Files:** with the Files chip on (the default; Ctrl+Shift+A), canvases
+  and attachments are nodes too — teal circles and amber squares, named
+  with their extension — linked from notes that link or embed them and
+  from canvases whose cards hold them. Toggling rebuilds keeping the
+  notes' places. A click goes to cce-notes like a note's, which
+  `xdg-open`s it.
 - **Layout:** force-directed (repulsion through a spatial grid of
   `REPULSE_RANGE` cells, springs, a centering pull), stepped in `tick`
   while `alpha` cools; once settled the app goes idle. The camera fits
@@ -53,7 +59,7 @@ editor.
 - Labels fade in from zoom 1.1; the hovered node's neighbourhood is lit
   and labelled whatever the zoom.
 
-`cargo test -p cce-graph` covers the model (build, ghosts, hops, the layout
+`cargo test -p cce-graph` covers the model (build, ghosts, file nodes, hops, the layout
 settling with links short, filters, hit-testing) and the editor's wiring.
 
 ## Build and run

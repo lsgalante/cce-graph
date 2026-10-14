@@ -1,7 +1,10 @@
 //! The vault as a link graph: one node per note (plus a ghost per link
 //! target that does not exist yet, as Obsidian shows them), an edge per
 //! pair of notes linked either way, and a force layout that cools and
-//! stops so the app goes idle once the picture settles.
+//! stops so the app goes idle once the picture settles. With `files` on,
+//! canvases and attachments are nodes too — Obsidian's "Attachments"
+//! toggle — linked from the notes that embed them and the canvases that
+//! hold them.
 //!
 //! Pure model, no drawing: positions are world units, the app owns the
 //! camera. Kept apart from cce-ui's `Graph` widget on purpose — ports,
@@ -32,6 +35,8 @@ pub struct Node {
     /// nowhere.
     pub path: String,
     pub name: String,
+    /// A ghost is a `Note`: what a link to nothing would make.
+    pub kind: FileKind,
     pub ghost: bool,
     pub tags: Vec<String>,
     pub pos: (f32, f32),
@@ -51,25 +56,45 @@ pub struct LinkGraph {
 }
 
 impl LinkGraph {
-    /// Build from the index. Nodes that were in `prev` keep their place;
-    /// new ones start next to a neighbour already placed, or on a spiral.
-    pub fn build(ix: &Index, prev: Option<&LinkGraph>) -> LinkGraph {
+    /// Build from the index: the notes, and with `files` the canvases and
+    /// attachments too. Nodes that were in `prev` keep their place; new
+    /// ones start next to a neighbour already placed, or on a spiral.
+    pub fn build(ix: &Index, prev: Option<&LinkGraph>, files: bool) -> LinkGraph {
         let mut g = LinkGraph::default();
-        let mut notes: Vec<&str> = ix.files().iter().filter(|(_, e)| e.kind == FileKind::Note).map(|(p, _)| p.as_str()).collect();
-        notes.sort();
-        for p in notes {
-            let tags = ix.note(p).map(|n| n.tags.iter().map(|t| t.name.to_lowercase()).collect()).unwrap_or_default();
-            g.add(Node { path: p.to_string(), name: stem(p).to_string(), ghost: false, tags, pos: (0.0, 0.0), vel: (0.0, 0.0), pinned: false });
+        // Notes first, then the files, each in path order.
+        let of_kind = |k: FileKind| ix.files().iter().filter(move |(_, e)| e.kind == k).map(|(p, e)| (p.as_str(), e));
+        let mut paths: Vec<_> = of_kind(FileKind::Note).collect();
+        if files {
+            let mut rest: Vec<_> = of_kind(FileKind::Canvas).chain(of_kind(FileKind::Attachment)).collect();
+            rest.sort_by_key(|(p, _)| *p);
+            paths.extend(rest);
+        }
+        for (p, e) in paths {
+            let tags = e.note.as_ref().map(|n| n.tags.iter().map(|t| t.name.to_lowercase()).collect()).unwrap_or_default();
+            g.add(Node {
+                path: p.to_string(),
+                name: stem(p).to_string(),
+                kind: e.kind,
+                ghost: false,
+                tags,
+                pos: (0.0, 0.0),
+                vel: (0.0, 0.0),
+                pinned: false,
+            });
         }
         let mut seen: HashSet<(usize, usize)> = HashSet::new();
         let count = g.nodes.len();
         for i in 0..count {
+            if g.nodes[i].kind == FileKind::Attachment {
+                continue;
+            }
             let from = g.nodes[i].path.clone();
             for (link, target) in ix.outgoing(&from) {
                 let j = match target {
                     Some(t) => match g.by_path.get(t) {
                         Some(&j) => j,
-                        // A link to an attachment or canvas: not drawn.
+                        // A link to a canvas or attachment while files are
+                        // hidden: not drawn.
                         None => continue,
                     },
                     None => {
@@ -79,6 +104,7 @@ impl LinkGraph {
                             None => g.add(Node {
                                 path: key,
                                 name: link.target.clone(),
+                                kind: FileKind::Note,
                                 ghost: true,
                                 tags: Vec::new(),
                                 pos: (0.0, 0.0),
@@ -375,7 +401,7 @@ mod tests {
     #[test]
     fn nodes_edges_and_ghosts() {
         let (_d, ix) = sample();
-        let g = LinkGraph::build(&ix, None);
+        let g = LinkGraph::build(&ix, None, false);
         let names: Vec<&str> = g.nodes.iter().map(|n| n.name.as_str()).collect();
         assert_eq!(names, ["A", "B", "D", "Lone", "C", "Nowhere"]);
         assert!(g.nodes[5].ghost);
@@ -387,9 +413,49 @@ mod tests {
     }
 
     #[test]
+    fn files_are_nodes_when_asked_for() {
+        let board = r#"{"nodes":[
+            {"id":"1","type":"file","file":"pic.png","x":0,"y":0,"width":10,"height":10},
+            {"id":"2","type":"file","file":"B.md","x":0,"y":0,"width":10,"height":10},
+            {"id":"3","type":"file","file":"gone.jpg","x":0,"y":0,"width":10,"height":10},
+            {"id":"4","type":"text","text":"see [[A]] #board","x":0,"y":0,"width":10,"height":10}
+        ],"edges":[]}"#;
+        let (_d, ix) = vault(&[
+            ("A.md", "![[pic.png]] and [[Board.canvas]]\n"),
+            ("B.md", "\n"),
+            ("Board.canvas", board),
+            ("pic.png", "x"),
+            ("spare.jpg", "x"),
+        ]);
+        let off = LinkGraph::build(&ix, None, false);
+        let names: Vec<&str> = off.nodes.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, ["A", "B"]);
+        assert!(off.edges.is_empty());
+
+        let g = LinkGraph::build(&ix, None, true);
+        let names: Vec<&str> = g.nodes.iter().map(|n| n.name.as_str()).collect();
+        // Notes, then canvases and attachments by path (keeping their
+        // extensions), then the canvas's missing image as a ghost.
+        assert_eq!(names, ["A", "B", "Board.canvas", "pic.png", "spare.jpg", "gone.jpg"]);
+        let at = |p: &str| g.index_of(p).unwrap();
+        assert_eq!(g.nodes[at("pic.png")].kind, FileKind::Attachment);
+        assert_eq!(g.nodes[at("Board.canvas")].kind, FileKind::Canvas);
+        assert_eq!(g.nodes[at("Board.canvas")].tags, ["board"]);
+        assert!(g.nodes[5].ghost);
+        let linked = |a: &str, b: &str| g.neighbors(at(a)).contains(&at(b));
+        // A embeds the picture and links the canvas; the canvas holds the
+        // picture and B, and its text card links back to A (one edge).
+        assert!(linked("A.md", "pic.png") && linked("A.md", "Board.canvas"));
+        assert!(linked("Board.canvas", "pic.png") && linked("Board.canvas", "B.md"));
+        assert_eq!(g.degree(at("Board.canvas")), 4);
+        assert_eq!(g.degree(at("spare.jpg")), 0);
+        assert_eq!(g.edges.len(), 5);
+    }
+
+    #[test]
     fn hops_reach_the_neighbourhood() {
         let (_d, ix) = sample();
-        let g = LinkGraph::build(&ix, None);
+        let g = LinkGraph::build(&ix, None, false);
         let d = g.index_of("D.md").unwrap();
         let names = |v: Vec<bool>| -> Vec<String> {
             v.iter().enumerate().filter(|(_, &s)| s).map(|(i, _)| g.nodes[i].name.clone()).collect()
@@ -401,7 +467,7 @@ mod tests {
     #[test]
     fn layout_settles_and_keeps_links_short() {
         let (_d, ix) = sample();
-        let mut g = LinkGraph::build(&ix, None);
+        let mut g = LinkGraph::build(&ix, None, false);
         let all = vec![true; g.len()];
         let mut steps = 0;
         while g.step(&all) {
@@ -420,11 +486,11 @@ mod tests {
     #[test]
     fn rebuild_keeps_positions_and_pins() {
         let (_d, ix) = sample();
-        let mut g = LinkGraph::build(&ix, None);
+        let mut g = LinkGraph::build(&ix, None, false);
         let a = g.index_of("A.md").unwrap();
         g.nodes[a].pos = (500.0, -40.0);
         g.nodes[a].pinned = true;
-        let g2 = LinkGraph::build(&ix, Some(&g));
+        let g2 = LinkGraph::build(&ix, Some(&g), false);
         let a2 = g2.index_of("A.md").unwrap();
         assert_eq!(g2.nodes[a2].pos, (500.0, -40.0));
         assert!(g2.nodes[a2].pinned);
@@ -433,7 +499,7 @@ mod tests {
     #[test]
     fn filters_by_name_path_and_tag() {
         let (_d, ix) = sample();
-        let g = LinkGraph::build(&ix, None);
+        let g = LinkGraph::build(&ix, None, false);
         let hits = |q: &str| -> Vec<String> {
             let f = Filter::parse(q);
             g.nodes.iter().filter(|n| f.matches(n)).map(|n| n.name.clone()).collect()
@@ -448,7 +514,7 @@ mod tests {
     #[test]
     fn hit_finds_the_nearest_visible_node() {
         let (_d, ix) = sample();
-        let mut g = LinkGraph::build(&ix, None);
+        let mut g = LinkGraph::build(&ix, None, false);
         for (i, n) in g.nodes.iter_mut().enumerate() {
             n.pos = (i as f32 * 100.0, 0.0);
         }

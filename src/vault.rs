@@ -7,7 +7,9 @@
 //! cce-notes' instance socket once a second. A click opens a note in
 //! cce-notes (over the same socket, or by launching it); dragging a note
 //! pins it, a right click unpins it. The filter box takes words (names),
-//! `#tag` and `path:folder`.
+//! `#tag` and `path:folder`. The Files chip (Ctrl+Shift+A) adds canvases
+//! and attachments as nodes; a click on one goes to cce-notes as well,
+//! which hands it to its own app.
 //!
 //! The layout steps in `tick` until it cools, then the app goes idle: no
 //! frames while nothing moves.
@@ -24,6 +26,8 @@ use cce_ui::widget::{
     Adapted, ElementState, Event, Key, KeyEvent, MouseButton, MouseScrollDelta, NamedKey, TextBox, WidgetHost,
 };
 use cce_vault::{notes_ipc, Index, VaultWatcher};
+
+use cce_vault::FileKind;
 
 use crate::linkgraph::{Filter, LinkGraph};
 
@@ -144,6 +148,8 @@ pub struct VaultApp {
     _watcher: Option<VaultWatcher>,
     graph: LinkGraph,
     visible: Vec<bool>,
+    /// Canvases and attachments are nodes too (the Files chip).
+    files: bool,
 
     local: bool,
     depth: usize,
@@ -179,6 +185,7 @@ pub struct VaultApp {
 /// Where the band's controls sit.
 struct Metrics {
     area: Rect,
+    files_chip: Rect,
     global_chip: Rect,
     local_chip: Rect,
     depth_chip: Rect,
@@ -194,7 +201,7 @@ impl VaultApp {
         watcher: Option<VaultWatcher>,
         sender: calloop::channel::Sender<Message>,
     ) -> VaultApp {
-        let graph = index.as_ref().map(|ix| LinkGraph::build(ix, None)).unwrap_or_default();
+        let graph = index.as_ref().map(|ix| LinkGraph::build(ix, None, true)).unwrap_or_default();
         let n = graph.len();
         // The context owns the widgets; the app keeps their handles.
         let mut ui_context = cce_ui::context::UiContext::new();
@@ -204,6 +211,7 @@ impl VaultApp {
             _watcher: watcher,
             graph,
             visible: vec![true; n],
+            files: true,
             local: false,
             depth: 1,
             center: None,
@@ -240,8 +248,10 @@ impl VaultApp {
         let depth_chip = Rect { x: filter.x - 12.0 - 76.0, y, width: 76.0, height: chip_h };
         let local_chip = Rect { x: depth_chip.x - 8.0 - 64.0, y, width: 64.0, height: chip_h };
         let global_chip = Rect { x: local_chip.x - 64.0, y, width: 64.0, height: chip_h };
+        let files_chip = Rect { x: global_chip.x - 12.0 - 56.0, y, width: 56.0, height: chip_h };
         Metrics {
             area: Rect { x: 0.0, y: BAND_H, width: w, height: (h - BAND_H - STATUS_H).max(0.0) },
+            files_chip,
             global_chip,
             local_chip,
             depth_chip,
@@ -329,7 +339,26 @@ impl VaultApp {
     fn vault_changed(&mut self, paths: Vec<PathBuf>) {
         let Some(ix) = self.index.as_mut() else { return };
         ix.apply_changes(&paths);
-        let g = LinkGraph::build(ix, Some(&self.graph));
+        self.rebuild();
+        // A rebuild keeps positions; it only needs a nudge, not a restart.
+        // After `recompute_visible`, whose own reheat would otherwise leave
+        // it at 0.4 (and `build` starts it at 1.0).
+        self.graph.alpha = 0.3;
+    }
+
+    /// Show or hide canvases and attachments. The notes keep their places;
+    /// the files that join start beside what links them.
+    fn set_files(&mut self, on: bool) {
+        self.files = on;
+        self.rebuild();
+        self.graph.alpha = 0.6;
+        self.fit_pending = true;
+    }
+
+    /// The graph again from the index, keeping positions and pins.
+    fn rebuild(&mut self) {
+        let Some(ix) = self.index.as_ref() else { return };
+        let g = LinkGraph::build(ix, Some(&self.graph), self.files);
         // A node drag holds an index, which the rebuild reorders: follow the
         // node by path, or let go if its note is gone. Kept as it was, the
         // drag moved (or a click opened) another note, or indexed past the
@@ -343,10 +372,6 @@ impl VaultApp {
         };
         self.graph = g;
         self.recompute_visible();
-        // A rebuild keeps positions; it only needs a nudge, not a restart.
-        // After `recompute_visible`, whose own reheat would otherwise leave
-        // it at 0.4 (and `build` starts it at 1.0).
-        self.graph.alpha = 0.3;
     }
 
     fn to_screen(&self, area: Rect, p: (f32, f32)) -> (f32, f32) {
@@ -431,7 +456,7 @@ impl VaultApp {
             (None, _, _) => "Graph".to_string(),
         };
         let ty = cce_ui::layout::align_text_y(0.0, BAND_H, size, 0.0);
-        pc.text_with(title, inset, ty, size, srgb_u8(FG), Some(family.clone()), Some([inset, 0.0, m.global_chip.x - 12.0, BAND_H]));
+        pc.text_with(title, inset, ty, size, srgb_u8(FG), Some(family.clone()), Some([inset, 0.0, m.files_chip.x - 12.0, BAND_H]));
         let chip = |pc: &mut PaintCtx, r: Rect, label: &str, on: bool| {
             pc.rounded_rect(r, 6.0, (true, true, true, true), if on { accent(0.25) } else { [1.0, 1.0, 1.0, 0.06] });
             let lw = label.chars().count() as f32 * size * 0.6;
@@ -445,6 +470,7 @@ impl VaultApp {
                 Some([r.x, r.y, r.x + r.width, r.y + r.height]),
             );
         };
+        chip(pc, m.files_chip, "Files", self.files);
         chip(pc, m.global_chip, "Global", !self.local);
         chip(pc, m.local_chip, "Local", self.local);
         if self.local {
@@ -472,9 +498,11 @@ impl VaultApp {
         } else if self.local && self.center.is_none() {
             "Open a note in cce-notes; the local graph follows it".to_string()
         } else {
-            let notes = self.visible.iter().filter(|v| **v).count();
+            let shown = || self.graph.nodes.iter().zip(&self.visible).filter(|(_, v)| **v).map(|(n, _)| n);
+            let notes = shown().filter(|n| n.kind == FileKind::Note).count();
             let links = self.graph.edges.iter().filter(|(a, b)| self.visible[*a] && self.visible[*b]).count();
-            format!("{notes} notes · {links} links · drag to pin, right-click to unpin, Ctrl+0 to fit")
+            let files = if self.files { format!("{} files · ", shown().filter(|n| n.kind != FileKind::Note).count()) } else { String::new() };
+            format!("{notes} notes · {files}{links} links · drag to pin, right-click to unpin, Ctrl+0 to fit")
         };
         pc.text_with(msg, inset, ty, size, srgb_u8(DIM), Some(family), Some([inset, y, w - inset, h]));
     }
@@ -534,16 +562,29 @@ impl VaultApp {
                 }
                 let r = (g.radius(i) * self.zoom).max(1.5);
                 let node = &g.nodes[i];
+                let dimmed = focus && !lit[i];
                 let color = if Some(i) == self.hover || Some(i) == center {
                     accent(1.0)
                 } else if node.ghost {
-                    [0.25, 0.25, 0.28, if focus && !lit[i] { 0.3 } else { 1.0 }]
-                } else if focus && !lit[i] {
-                    [0.45, 0.45, 0.5, 0.25]
+                    [0.25, 0.25, 0.28, if dimmed { 0.3 } else { 1.0 }]
                 } else {
-                    [0.62, 0.62, 0.68, 1.0]
+                    // Canvases teal and attachments amber, as files apart
+                    // from the grey notes.
+                    let c = match node.kind {
+                        FileKind::Note => [0.62, 0.62, 0.68],
+                        FileKind::Canvas => [0.36, 0.66, 0.68],
+                        FileKind::Attachment => [0.78, 0.6, 0.32],
+                    };
+                    let k = if dimmed { 0.72 } else { 1.0 };
+                    [c[0] * k, c[1] * k, c[2] * k, if dimmed { 0.25 } else { 1.0 }]
                 };
-                pc.circle(p.0, p.1, r, color);
+                if node.kind == FileKind::Attachment && !node.ghost {
+                    // A square, so a picture reads as a file at any zoom.
+                    let r = r * 0.9;
+                    pc.rounded_rect(Rect { x: p.0 - r, y: p.1 - r, width: 2.0 * r, height: 2.0 * r }, r * 0.3, (true, true, true, true), color);
+                } else {
+                    pc.circle(p.0, p.1, r, color);
+                }
                 if node.pinned {
                     pc.circle(p.0, p.1, (r * 0.35).max(1.0), [0.1, 0.1, 0.12, 1.0]);
                 }
@@ -626,7 +667,8 @@ impl Application for VaultApp {
             width: 1000,
             height: 700,
             fullscreen: false,
-            min_size: Some((420, 300)),
+            // The band's chips and filter box fit from here.
+            min_size: Some((480, 300)),
         }
     }
 
@@ -789,6 +831,10 @@ impl Application for VaultApp {
             self.ui_context.unfocus_id(self.filter_input.id());
         }
         if pressed && button == MouseButton::Left {
+            if m.files_chip.contains(s.0, s.1) {
+                self.set_files(!self.files);
+                return None;
+            }
             if m.global_chip.contains(s.0, s.1) {
                 self.set_mode(false, None);
                 return None;
@@ -873,6 +919,8 @@ impl Application for VaultApp {
         if k("toggle_local", "ctrl+l") {
             let local = !self.local;
             self.set_mode(local, None);
+        } else if k("toggle_files", "ctrl+shift+a") {
+            self.set_files(!self.files);
         } else if k("fit", "ctrl+0") {
             self.fit();
         } else if k("filter", "ctrl+f") {
@@ -943,6 +991,34 @@ mod tests {
         assert!(matches!(app.drag, Drag::None));
         // And a rebuild only nudges the layout.
         assert_eq!(app.graph.alpha, 0.3);
+    }
+
+    #[test]
+    fn the_files_chip_hides_files_and_keeps_notes_in_place() {
+        let (_dir, mut app) = app_over(&[("A.md", "![[pic.png]]"), ("pic.png", "x")]);
+        assert!(app.files);
+        let pic = app.graph.index_of("pic.png").unwrap();
+        let a = app.graph.index_of("A.md").unwrap();
+        assert_eq!(app.graph.neighbors(a), [pic]);
+        app.graph.nodes[a].pos = (300.0, 40.0);
+
+        // Off by a click on the chip: the picture goes, the note stays put.
+        let c = app.metrics().files_chip;
+        let on_chip = LogicalPosition { x: c.x + c.width / 2.0, y: c.y + c.height / 2.0 };
+        let mut rebuild = false;
+        app.handle_mouse_input(MouseButton::Left, ElementState::Pressed, on_chip, &mut rebuild);
+        assert!(!app.files);
+        assert!(app.graph.index_of("pic.png").is_none());
+        assert_eq!(app.visible.len(), app.graph.len());
+        let a = app.graph.index_of("A.md").unwrap();
+        assert_eq!(app.graph.nodes[a].pos, (300.0, 40.0));
+
+        // A drag on a file lets go when files hide.
+        app.set_files(true);
+        let pic = app.graph.index_of("pic.png").unwrap();
+        app.drag = Drag::Node { i: pic, from: (0.0, 0.0), moved: true };
+        app.set_files(false);
+        assert!(matches!(app.drag, Drag::None));
     }
 
     #[test]
