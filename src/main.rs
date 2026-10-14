@@ -1,11 +1,11 @@
 use cce_ui::widget::Handle;
 use cce_ui::engine::{Application, LogicalPosition, LogicalSize, WindowSettings};
 mod linkgraph;
+mod picture;
 mod vault;
 mod wiring;
 
 use cce_ui::widget::{Adapted, MouseButton, ElementState, MouseScrollDelta, KeyEvent, WidgetEvent, WidgetHost, Event, Graph, GraphNode, MenuBar, GraphController, Dropdown, Label};
-use image::GenericImageView;
 
 #[derive(Debug, Clone)]
 enum AppMessage {
@@ -70,44 +70,13 @@ struct LoadedImage {
     path: String,
     position: (f32, f32),
     size: (f32, f32),
-    /// RGBA8, `pixel_width` x `pixel_height`: kept to upload again if the
-    /// renderer is rebuilt (its image ids die with it).
-    pixels: Vec<u8>,
-    pixel_width: u32,
-    pixel_height: u32,
-    /// The GPU image and the renderer epoch it was uploaded in; uploaded at
-    /// first draw (`display_list`), freed on drop.
-    texture: Option<(u32, u32)>,
+    /// Uploaded at first draw (`display_list`).
+    picture: picture::Picture,
 }
 
 impl LoadedImage {
-    fn new(path: String, position: (f32, f32), size: (f32, f32), (pixels, pixel_width, pixel_height): (Vec<u8>, u32, u32)) -> Self {
-        LoadedImage { path, position, size, pixels, pixel_width, pixel_height, texture: None }
-    }
-
-    /// The image id to draw by, uploading the pixels when this renderer has
-    /// not got them yet.
-    fn texture_id(&mut self) -> u32 {
-        let epoch = cce_ui::draw::renderer_epoch();
-        match self.texture {
-            Some((id, e)) if e == epoch => id,
-            _ => {
-                let id = cce_ui::draw::upload_rgba_mipmapped(self.pixels.clone(), self.pixel_width, self.pixel_height);
-                self.texture = Some((id, epoch));
-                id
-            }
-        }
-    }
-}
-
-impl Drop for LoadedImage {
-    fn drop(&mut self) {
-        // An id from an earlier renderer named nothing once it went.
-        if let Some((id, epoch)) = self.texture {
-            if epoch == cce_ui::draw::renderer_epoch() {
-                cce_ui::draw::free_image(id);
-            }
-        }
+    fn new(path: String, position: (f32, f32), size: (f32, f32), decoded: (Vec<u8>, u32, u32)) -> Self {
+        LoadedImage { path, position, size, picture: picture::Picture::new(decoded) }
     }
 }
 
@@ -546,18 +515,7 @@ const MAX_IMAGE_DIM: u32 = 1024;
 
 /// Decode an image to RGBA8, shrunk to fit `MAX_IMAGE_DIM` (never enlarged).
 fn load_image_pixels(path: &std::path::Path) -> Option<(Vec<u8>, u32, u32)> {
-    let img = image::open(path).ok()?;
-    let (w, h) = img.dimensions();
-    if w == 0 || h == 0 {
-        return None;
-    }
-    let scale = (MAX_IMAGE_DIM as f32 / w.max(h) as f32).min(1.0);
-    // At least a pixel each way: at an extreme aspect ratio the short side
-    // rounds to 0, the aspect ratio goes infinite, and the size saved with
-    // it is not KDL.
-    let (nw, nh) = (((w as f32 * scale) as u32).max(1), ((h as f32 * scale) as u32).max(1));
-    let img = if (nw, nh) == (w, h) { img } else { img.resize_exact(nw, nh, image::imageops::FilterType::Triangle) };
-    Some((img.to_rgba8().into_raw(), nw, nh))
+    picture::decode(path, MAX_IMAGE_DIM)
 }
 
 impl GraphApp {
@@ -1106,7 +1064,7 @@ impl GraphApp {
         let x = grid_origin_x + img.position.0 * (grid_size_x + skipped_col_w);
         let y = grid_origin_y + img.position.1 * (grid_size_y + skipped_row_h);
         let w = img.size.0 * grid_size_x + (img.size.0 - 1.0).max(0.0) * skipped_col_w;
-        let h = w * img.pixel_height as f32 / img.pixel_width as f32;
+        let h = w * img.picture.aspect();
         (x, y, w, h)
     }
 
@@ -1420,7 +1378,7 @@ impl Application for GraphApp {
                     "Selected Image:\nName: {}\nPosition: (Col {:.1}, Row {:.1})\nSize: {:.1} x {:.1} cells\nResolution: {} x {} px",
                     filename, img.position.0, img.position.1,
                     img.size.0, img.size.1,
-                    img.pixel_width, img.pixel_height
+                    img.picture.width, img.picture.height
                 )
             } else {
                 "No Object Selected".to_string()
@@ -1532,7 +1490,7 @@ impl Application for GraphApp {
             let images = &mut self.loaded_images;
             pc.clip(Rect { x: gx, y: gy, width: gw, height: gh }, |pc| {
                 for (i, (img, &(x, y, w, h))) in images.iter_mut().zip(&rects).enumerate() {
-                    pc.image(img.texture_id(), Rect { x, y, width: w, height: h }, 1.0);
+                    pc.image(img.picture.texture_id(), Rect { x, y, width: w, height: h }, 1.0);
                     if Some(i) == selected {
                         // A cyan selection outline just outside the image.
                         let (t, c) = (2.0, [0.0, 0.75, 1.0, 1.0]);

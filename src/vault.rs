@@ -9,11 +9,13 @@
 //! pins it, a right click unpins it. The filter box takes words (names),
 //! `#tag` and `path:folder`. The Files chip (Ctrl+Shift+A) adds canvases
 //! and attachments as nodes; a click on one goes to cce-notes as well,
-//! which hands it to its own app.
+//! which hands it to its own app. Zoomed in, an image's node is its
+//! thumbnail, decoded on a worker thread the first time it shows.
 //!
 //! The layout steps in `tick` until it cools, then the app goes idle: no
 //! frames while nothing moves.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -30,6 +32,7 @@ use cce_vault::{notes_ipc, Index, VaultWatcher};
 use cce_vault::FileKind;
 
 use crate::linkgraph::{Filter, LinkGraph};
+use crate::picture::{self, Picture};
 
 const BAND_H: f32 = 40.0;
 const STATUS_H: f32 = 26.0;
@@ -42,6 +45,13 @@ const STEPS_PER_FRAME: usize = 2;
 const POLL_EVERY: Duration = Duration::from_secs(1);
 /// A press that moves less than this is a click, not a drag.
 const CLICK_SLOP: f32 = 4.0;
+/// A thumbnail's longest side, in world units.
+const THUMB_WORLD: f32 = 40.0;
+/// Thumbnails replace the squares once they would be this wide on screen.
+const THUMB_FROM_PX: f32 = 14.0;
+/// The longest side a thumbnail is decoded at: what it is drawn at, at
+/// `MAX_ZOOM`.
+const THUMB_PX: u32 = 256;
 
 const FG: [f32; 4] = cce_ui::color::TEXT_FG;
 const DIM: [f32; 4] = cce_ui::color::TEXT_DIM;
@@ -133,7 +143,23 @@ pub enum Message {
     Current(Option<String>),
     /// cce-notes could not be started to show a note; said in the status line.
     NotesFailed(String),
+    /// The decoder finished an image (`None`: it could not read it). `gen`
+    /// says which request, so an answer about an older copy of the file is
+    /// dropped.
+    Thumb { path: String, gen: u64, decoded: Option<(Vec<u8>, u32, u32)> },
     Exit,
+}
+
+/// An image node's picture, by vault path.
+enum Thumb {
+    Loading(u64),
+    Failed,
+    Ready(Picture),
+}
+
+/// Whether `path` is an image this build can decode.
+fn is_picture(path: &str) -> bool {
+    image::ImageFormat::from_path(path).is_ok_and(|f| f.reading_enabled())
 }
 
 enum Drag {
@@ -150,6 +176,13 @@ pub struct VaultApp {
     visible: Vec<bool>,
     /// Canvases and attachments are nodes too (the Files chip).
     files: bool,
+    /// Image thumbnails, decoded as their nodes first show zoomed in, and
+    /// dropped when the file changes.
+    thumbs: HashMap<String, Thumb>,
+    thumb_gen: u64,
+    /// The decoder thread's queue (vault path, file, request); started with
+    /// the first request.
+    decoder: Option<std::sync::mpsc::Sender<(String, PathBuf, u64)>>,
 
     local: bool,
     depth: usize,
@@ -212,6 +245,9 @@ impl VaultApp {
             graph,
             visible: vec![true; n],
             files: true,
+            thumbs: HashMap::new(),
+            thumb_gen: 0,
+            decoder: None,
             local: false,
             depth: 1,
             center: None,
@@ -338,7 +374,12 @@ impl VaultApp {
 
     fn vault_changed(&mut self, paths: Vec<PathBuf>) {
         let Some(ix) = self.index.as_mut() else { return };
-        ix.apply_changes(&paths);
+        let changes = ix.apply_changes(&paths);
+        // A changed picture decodes again when next shown; a gone one frees
+        // its image.
+        for p in changes.updated.iter().chain(&changes.removed) {
+            self.thumbs.remove(p);
+        }
         self.rebuild();
         // A rebuild keeps positions; it only needs a nudge, not a restart.
         // After `recompute_visible`, whose own reheat would otherwise leave
@@ -372,6 +413,88 @@ impl VaultApp {
         };
         self.graph = g;
         self.recompute_visible();
+    }
+
+    fn shows_thumbs(&self) -> bool {
+        THUMB_WORLD * self.zoom >= THUMB_FROM_PX
+    }
+
+    /// Half the width and height, in world units, of node `i`'s thumbnail
+    /// when it is drawn as one.
+    fn thumb_half(&self, i: usize) -> Option<(f32, f32)> {
+        let node = &self.graph.nodes[i];
+        if !self.shows_thumbs() || node.kind != FileKind::Attachment || node.ghost {
+            return None;
+        }
+        let Some(Thumb::Ready(p)) = self.thumbs.get(&node.path) else { return None };
+        let (a, half) = (p.aspect(), THUMB_WORLD / 2.0);
+        Some(if a <= 1.0 { (half, half * a) } else { (half / a, half) })
+    }
+
+    /// Before a paint: ask the decoder for the pictures of image nodes on
+    /// screen that have none yet, and hand back each node's GPU image to
+    /// draw (uploading those just decoded).
+    fn prepare_thumbs(&mut self, area: Rect) -> Vec<Option<u32>> {
+        let mut out = vec![None; self.graph.len()];
+        if !self.shows_thumbs() || !self.files {
+            return out;
+        }
+        let reach = THUMB_WORLD * self.zoom;
+        for (i, slot) in out.iter_mut().enumerate() {
+            let node = &self.graph.nodes[i];
+            if !self.visible[i] || node.kind != FileKind::Attachment || node.ghost || !is_picture(&node.path) {
+                continue;
+            }
+            let p = self.to_screen(area, node.pos);
+            if p.0 < area.x - reach || p.0 > area.x + area.width + reach || p.1 < area.y - reach || p.1 > area.y + area.height + reach {
+                continue;
+            }
+            let path = node.path.clone();
+            match self.thumbs.get_mut(&path) {
+                Some(Thumb::Ready(pic)) => *slot = Some(pic.texture_id()),
+                Some(_) => {}
+                None => self.request_thumb(path),
+            }
+        }
+        out
+    }
+
+    fn request_thumb(&mut self, path: String) {
+        let Some(ix) = &self.index else { return };
+        let abs = ix.abs(&path);
+        if self.decoder.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel::<(String, PathBuf, u64)>();
+            let out = self.sender.clone();
+            let spawned = std::thread::Builder::new().name("thumbs".into()).spawn(move || {
+                for (path, abs, gen) in rx {
+                    let decoded = picture::decode(&abs, THUMB_PX);
+                    if out.send(Message::Thumb { path, gen, decoded }).is_err() {
+                        break;
+                    }
+                }
+            });
+            if spawned.is_err() {
+                return;
+            }
+            self.decoder = Some(tx);
+        }
+        self.thumb_gen += 1;
+        let gen = self.thumb_gen;
+        if self.decoder.as_ref().is_some_and(|d| d.send((path.clone(), abs, gen)).is_ok()) {
+            self.thumbs.insert(path, Thumb::Loading(gen));
+        }
+    }
+
+    fn got_thumb(&mut self, path: String, gen: u64, decoded: Option<(Vec<u8>, u32, u32)>) {
+        if !matches!(self.thumbs.get(&path), Some(Thumb::Loading(g)) if *g == gen) {
+            return;
+        }
+        let thumb = match decoded {
+            Some(d) => Thumb::Ready(Picture::new(d)),
+            None => Thumb::Failed,
+        };
+        self.thumbs.insert(path, thumb);
+        self.needs_rebuild = true;
     }
 
     fn to_screen(&self, area: Rect, p: (f32, f32)) -> (f32, f32) {
@@ -411,7 +534,18 @@ impl VaultApp {
             return None;
         }
         let w = self.to_world(area, s);
-        self.graph.hit(&self.visible, w.0, w.1, 4.0 / self.zoom)
+        // A thumbnail is bigger than the dot it stands for: under the
+        // pointer, the nearest one wins.
+        let on_thumb = (0..self.graph.len())
+            .filter(|&i| self.visible[i])
+            .filter_map(|i| {
+                let (hw, hh) = self.thumb_half(i)?;
+                let (dx, dy) = (w.0 - self.graph.nodes[i].pos.0, w.1 - self.graph.nodes[i].pos.1);
+                (dx.abs() <= hw && dy.abs() <= hh).then_some((i, dx * dx + dy * dy))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| i);
+        on_thumb.or_else(|| self.graph.hit(&self.visible, w.0, w.1, 4.0 / self.zoom))
     }
 
     fn open(&mut self, i: usize) {
@@ -507,7 +641,8 @@ impl VaultApp {
         pc.text_with(msg, inset, ty, size, srgb_u8(DIM), Some(family), Some([inset, y, w - inset, h]));
     }
 
-    fn paint_graph(&self, pc: &mut PaintCtx, area: Rect) {
+    /// `thumbs` holds each node's GPU image to draw as (`prepare_thumbs`).
+    fn paint_graph(&self, pc: &mut PaintCtx, area: Rect, thumbs: &[Option<u32>]) {
         if let Some(e) = &self.error {
             let (family, size) = cce_ui::layout::list_font_parsed();
             for (i, line) in e.lines().enumerate() {
@@ -578,15 +713,36 @@ impl VaultApp {
                     let k = if dimmed { 0.72 } else { 1.0 };
                     [c[0] * k, c[1] * k, c[2] * k, if dimmed { 0.25 } else { 1.0 }]
                 };
-                if node.kind == FileKind::Attachment && !node.ghost {
-                    // A square, so a picture reads as a file at any zoom.
-                    let r = r * 0.9;
-                    pc.rounded_rect(Rect { x: p.0 - r, y: p.1 - r, width: 2.0 * r, height: 2.0 * r }, r * 0.3, (true, true, true, true), color);
+                // How far below the centre the label goes.
+                let mut below = r;
+                if let (Some(id), Some((hw, hh))) = (thumbs.get(i).copied().flatten(), self.thumb_half(i)) {
+                    let (w, h) = (2.0 * hw * self.zoom, 2.0 * hh * self.zoom);
+                    let rect = Rect { x: p.0 - w / 2.0, y: p.1 - h / 2.0, width: w, height: h };
+                    pc.image(id, rect, if dimmed { 0.25 } else { 1.0 });
+                    if Some(i) == self.hover || Some(i) == center {
+                        // The accent as a frame just outside the picture.
+                        let (t, c) = (2.0, accent(1.0));
+                        pc.quad(Rect { x: rect.x - t, y: rect.y - t, width: w + 2.0 * t, height: t }, c);
+                        pc.quad(Rect { x: rect.x - t, y: rect.y + h, width: w + 2.0 * t, height: t }, c);
+                        pc.quad(Rect { x: rect.x - t, y: rect.y, width: t, height: h }, c);
+                        pc.quad(Rect { x: rect.x + w, y: rect.y, width: t, height: h }, c);
+                    }
+                    if node.pinned {
+                        // In a corner, not over the picture's middle.
+                        pc.circle(rect.x + 5.0, rect.y + 5.0, 3.0, [0.1, 0.1, 0.12, 1.0]);
+                    }
+                    below = h / 2.0;
                 } else {
-                    pc.circle(p.0, p.1, r, color);
-                }
-                if node.pinned {
-                    pc.circle(p.0, p.1, (r * 0.35).max(1.0), [0.1, 0.1, 0.12, 1.0]);
+                    if node.kind == FileKind::Attachment && !node.ghost {
+                        // A square, so a file reads as one at any zoom.
+                        let r = r * 0.9;
+                        pc.rounded_rect(Rect { x: p.0 - r, y: p.1 - r, width: 2.0 * r, height: 2.0 * r }, r * 0.3, (true, true, true, true), color);
+                    } else {
+                        pc.circle(p.0, p.1, r, color);
+                    }
+                    if node.pinned {
+                        pc.circle(p.0, p.1, (r * 0.35).max(1.0), [0.1, 0.1, 0.12, 1.0]);
+                    }
                 }
                 // Labels fade in with zoom; the hovered node and its
                 // neighbours always show theirs.
@@ -605,7 +761,7 @@ impl VaultApp {
                 pc.text_faded(
                     node.name.clone(),
                     p.0 - lw / 2.0,
-                    p.1 + r + 3.0,
+                    p.1 + below + 3.0,
                     LABEL_SIZE,
                     srgb_u8(color),
                     alpha,
@@ -678,6 +834,7 @@ impl Application for VaultApp {
             Message::Mode { local, note } => self.set_mode(local, note),
             Message::Current(cur) => self.got_current(cur),
             Message::NotesFailed(e) => self.status = Some(e),
+            Message::Thumb { path, gen, decoded } => self.got_thumb(path, gen, decoded),
             Message::Exit => *_exit = true,
         }
         *needs_rebuild = true;
@@ -725,9 +882,10 @@ impl Application for VaultApp {
             self.ui_context.rebuild_spatial_grid();
             self.needs_rebuild = false;
         }
+        let thumbs = self.prepare_thumbs(m.area);
         let mut pc = PaintCtx::new();
         pc.root_plate(size.width, size.height);
-        self.paint_graph(&mut pc, m.area);
+        self.paint_graph(&mut pc, m.area, &thumbs);
         self.paint_band(&mut pc, &m);
         self.paint_status(&mut pc);
         Some(pc.finish())
@@ -1019,6 +1177,42 @@ mod tests {
         app.drag = Drag::Node { i: pic, from: (0.0, 0.0), moved: true };
         app.set_files(false);
         assert!(matches!(app.drag, Drag::None));
+    }
+
+    #[test]
+    fn image_nodes_become_their_thumbnails_zoomed_in() {
+        let (dir, mut app) = app_over(&[("A.md", "![[pic.png]]")]);
+        let file = dir.path().join("pic.png");
+        image::RgbaImage::new(40, 20).save(&file).unwrap();
+        app.vault_changed(vec![file.clone()]);
+        let pic = app.graph.index_of("pic.png").unwrap();
+        let area = app.metrics().area;
+
+        // Too far out to show a picture: nothing is asked for.
+        app.zoom = 0.1;
+        assert!(app.prepare_thumbs(area).iter().all(Option::is_none));
+        assert!(app.thumbs.is_empty());
+
+        app.zoom = 1.0;
+        app.cam = app.graph.nodes[pic].pos;
+        app.prepare_thumbs(area);
+        let Some(&Thumb::Loading(gen)) = app.thumbs.get("pic.png") else { panic!("not requested") };
+        // An answer to an older request is not this one.
+        app.got_thumb("pic.png".into(), gen - 1, Some((vec![0; 4], 1, 1)));
+        assert!(matches!(app.thumbs.get("pic.png"), Some(Thumb::Loading(_))));
+        app.got_thumb("pic.png".into(), gen, picture::decode(&file, THUMB_PX));
+        assert_eq!(app.thumb_half(pic), Some((20.0, 10.0)));
+        assert!(app.prepare_thumbs(area)[pic].is_some());
+
+        // The picture's corner is the node, well outside the dot.
+        let p = app.to_screen(area, app.graph.nodes[pic].pos);
+        assert!(app.graph.hit(&app.visible, app.graph.nodes[pic].pos.0 + 18.0, app.graph.nodes[pic].pos.1 + 8.0, 0.0) != Some(pic));
+        assert_eq!(app.node_at((p.0 + 18.0, p.1 + 8.0)), Some(pic));
+
+        // A changed file is decoded again.
+        image::RgbaImage::new(30, 30).save(&file).unwrap();
+        app.vault_changed(vec![file]);
+        assert!(!app.thumbs.contains_key("pic.png"));
     }
 
     #[test]

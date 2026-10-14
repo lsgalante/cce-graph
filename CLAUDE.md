@@ -40,6 +40,12 @@ editor.
   from canvases whose cards hold them. Toggling rebuilds keeping the
   notes' places. A click goes to cce-notes like a note's, which
   `xdg-open`s it.
+- **Thumbnails:** zoomed in past `THUMB_FROM_PX`, an image's node is its
+  picture (`THUMB_WORLD` units on its long side, labelled below, and hit
+  as a rectangle). Each is decoded at `THUMB_PX` on one worker thread the
+  first time it is on screen — `prepare_thumbs` asks, before the paint —
+  and comes back as `Message::Thumb`; a watcher change drops it to decode
+  again. The GPU side is the editor's `Picture`.
 - **Layout:** force-directed (repulsion through a spatial grid of
   `REPULSE_RANGE` cells, springs, a centering pull), stepped in `tick`
   while `alpha` cools; once settled the app goes idle. The camera fits
@@ -146,7 +152,7 @@ numbers, e.g. "6l pattern", "Phase 6m", document them deliberately):
 
 - Images are decoded, shrunk to fit `MAX_IMAGE_DIM` (never enlarged), and drawn as
   one mipmapped GPU image each (`cce_ui::draw::upload_rgba_mipmapped` + `pc.image`),
-  clipped to the graph rect. Uploads are lazy (`LoadedImage::texture_id`, at draw) and
+  clipped to the graph rect. Uploads are lazy (`Picture::texture_id` in `src/picture.rs`, at draw) and
   redone when `renderer_epoch` changes; the pixels are kept for that. Image size on the
   canvas is in grid cells (width drives height via aspect ratio). Positions are
   (column, row) floats; snap rounds to half-cells.
