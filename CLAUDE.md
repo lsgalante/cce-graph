@@ -33,7 +33,10 @@ editor.
 
 - **Model:** a node per note plus a grey ghost per link target that does
   not exist; one edge per linked pair. Built from `cce_vault::Index`, and
-  rebuilt on every watcher batch keeping positions and pins.
+  rebuilt on every watcher batch keeping positions and pins. A label
+  shared by several files takes as much of its folder path as tells them
+  apart (`disambiguate`: `Finance/Index`, `Health/Index`; a root file keeps
+  its bare name).
 - **Files:** with the Files chip on (the default; Ctrl+Shift+A), canvases
   and attachments are nodes too — teal circles and amber squares, named
   with their extension — linked from notes that link or embed them and

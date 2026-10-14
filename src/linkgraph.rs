@@ -82,6 +82,7 @@ impl LinkGraph {
                 pinned: false,
             });
         }
+        disambiguate(&mut g.nodes);
         let mut seen: HashSet<(usize, usize)> = HashSet::new();
         let count = g.nodes.len();
         for i in 0..count {
@@ -372,6 +373,42 @@ impl Filter {
     }
 }
 
+/// Labels shared by several files take as much of their folder path as
+/// tells them apart: each folder's `Index.md` reads `Finance/Index`,
+/// `Health/Index`, … rather than all of them `Index`. A file at the vault
+/// root keeps its bare name.
+fn disambiguate(nodes: &mut [Node]) {
+    let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, n) in nodes.iter().enumerate() {
+        by_name.entry(n.name.to_lowercase()).or_default().push(i);
+    }
+    for group in by_name.into_values().filter(|g| g.len() > 1) {
+        // Each path's folders, innermost first.
+        let dirs: Vec<Vec<&str>> = group.iter().map(|&i| nodes[i].path.rsplit('/').skip(1).collect()).collect();
+        let deepest = dirs.iter().map(Vec::len).max().unwrap_or(0);
+        let mut depth = 1;
+        let labels = loop {
+            let labels: Vec<String> = group
+                .iter()
+                .zip(&dirs)
+                .map(|(&i, d)| {
+                    let mut parts: Vec<&str> = d[..depth.min(d.len())].iter().rev().copied().collect();
+                    parts.push(&nodes[i].name);
+                    parts.join("/")
+                })
+                .collect();
+            let distinct: HashSet<String> = labels.iter().map(|l| l.to_lowercase()).collect();
+            if distinct.len() == labels.len() || depth >= deepest {
+                break labels;
+            }
+            depth += 1;
+        };
+        for (i, label) in group.into_iter().zip(labels) {
+            nodes[i].name = label;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,6 +433,22 @@ mod tests {
             ("Lone.md", "no links\n"),
             ("pic.png", "x"),
         ])
+    }
+
+    #[test]
+    fn shared_names_take_their_folders() {
+        let (_d, ix) = vault(&[
+            ("Index.md", ""),
+            ("Finance/Index.md", ""),
+            ("Health/Index.md", ""),
+            ("a/x/Note.md", ""),
+            ("b/x/Note.md", ""),
+            ("Lone.md", ""),
+        ]);
+        let g = LinkGraph::build(&ix, None, false);
+        let mut names: Vec<&str> = g.nodes.iter().map(|n| n.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, ["Finance/Index", "Health/Index", "Index", "Lone", "a/x/Note", "b/x/Note"]);
     }
 
     #[test]
