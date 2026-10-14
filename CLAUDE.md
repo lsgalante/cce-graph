@@ -102,7 +102,7 @@ needs a running Wayland session — ideally the `cce` compositor.
 
 This app is the reference for cce-ui's post-Phase-6 shape — no container widgets, one
 paint path. When editing, preserve these invariants (the inline comments citing phase
-numbers, e.g. "6l pattern", "6m recipe", document them deliberately):
+numbers, e.g. "6l pattern", "Phase 6m", document them deliberately):
 
 - **Single paint path**: everything renders in `display_list()` — relayout when
   `needs_rebuild`/resize, then the window plate is emitted as raw prims, top-level
