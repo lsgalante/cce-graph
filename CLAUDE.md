@@ -113,7 +113,7 @@ needs a running Wayland session — ideally the `cce` compositor.
 - **Reopen where it was** (`src/ui_state.rs`): the open document and the canvas's
   pan/zoom go to `<XDG state>/cce/graph/state.json` on open, Save As, New and
   `on_exit`, with the path argv named (`launched`). A launch whose argv matches
-  `launched` (a restart replays argv) reopens the saved document and view, if it still
+  `launched` (a restart replays argv), or names nothing, reopens the saved document and view, if it still
   exists; argv naming something else wins with the default view. Restoring only
   loads — it never writes a document.
 - Recent files are shared toolkit state (`cce_ui::config::load_recent_files`),

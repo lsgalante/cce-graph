@@ -7,9 +7,10 @@
 //! **A restart replays the same command line**, so `cce-graph a/` would
 //! always come back on `a/` even after the user opened `b/`. The file
 //! therefore also records the path the command line named (`launched`): the
-//! same command line again is this window reopening, and the saved document
-//! wins; a command line naming another path is a new request, and it wins
-//! (with the default view — the saved one belongs to another document).
+//! same command line again (or none) is this window reopening, and the saved
+//! document wins; a command line naming another path is a new request, and
+//! it wins (with the default view — the saved one belongs to another
+//! document).
 //! Restoring only opens the document; it never writes one.
 //!
 //! `cce_state_dir()/graph/state.json`, written whole to a temporary file and
@@ -55,11 +56,11 @@ pub fn initial(argv_path: Option<&Path>) -> Option<Saved> {
     choose(launched.as_deref(), saved, |p| p.exists())
 }
 
-/// The saved place when this command line is the one it was saved under and
-/// its document is still there; otherwise `None`, and the command line (or
-/// the default document) is opened as before.
+/// The saved place when this command line is the one it was saved under (or
+/// names nothing) and its document is still there; otherwise `None`, and the
+/// command line (or the default document) is opened as before.
 fn choose(launched: Option<&Path>, saved: Option<Saved>, exists: impl Fn(&Path) -> bool) -> Option<Saved> {
-    saved.filter(|s| s.launched.as_deref() == launched && s.open.as_deref().is_some_and(&exists))
+    saved.filter(|s| (launched.is_none() || s.launched.as_deref() == launched) && s.open.as_deref().is_some_and(&exists))
 }
 
 /// Record where the editor is.
@@ -97,6 +98,9 @@ mod tests {
         // Launched on a/, opened b/, restarted with the same argv: b/.
         let s = saved("/p/b", Some("/p/a"));
         assert_eq!(choose(Some(Path::new("/p/a")), Some(s.clone()), all_exist), Some(s));
+        // A plain launch reopens whatever was open, however it was launched.
+        let s = saved("/p/b", Some("/p/a"));
+        assert_eq!(choose(None, Some(s.clone()), all_exist), Some(s));
     }
 
     #[test]
@@ -104,8 +108,6 @@ mod tests {
         let a = Path::new("/p/a");
         assert_eq!(choose(Some(Path::new("/p/c")), Some(saved("/p/b", Some("/p/a"))), all_exist), None);
         assert_eq!(choose(Some(a), Some(saved("/p/b", None)), all_exist), None);
-        // A plain launch after one that named a path is a different request too.
-        assert_eq!(choose(None, Some(saved("/p/b", Some("/p/a"))), all_exist), None);
     }
 
     #[test]
