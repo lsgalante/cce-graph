@@ -1074,26 +1074,30 @@ impl Application for VaultApp {
         if !pressed {
             return None;
         }
-        let k = |name: &str, default: &str| cce_ui::widget::match_key_shortcut(event, &cce_ui::input::app_chord(name, default));
-        if k("toggle_local", "ctrl+l") {
+        let chords = vault_chords();
+        let k = |name: &str| {
+            let i = VAULT_KEYS.iter().position(|(n, _, _)| *n == name).expect("a vault key in VAULT_KEYS");
+            cce_ui::widget::match_key_shortcut(event, &chords[i])
+        };
+        if k("toggle_local") {
             let local = !self.local;
             self.set_mode(local, None);
-        } else if k("toggle_files", "ctrl+shift+a") {
+        } else if k("toggle_files") {
             self.set_files(!self.files);
-        } else if k("fit", "ctrl+0") {
+        } else if k("fit") {
             self.fit();
-        } else if k("filter", "ctrl+f") {
+        } else if k("filter") {
             self.ui_context.set_focused_id(self.filter_input.id());
             WidgetHost::focus(&mut self.ui_context[self.filter_input]);
-        } else if k("depth_more", "ctrl+=") || k("depth_more_plus", "ctrl+shift+=") {
+        } else if k("depth_more") || k("depth_more_plus") {
             self.depth = (self.depth + 1).min(4);
             self.recompute_visible();
             self.fit_pending = true;
-        } else if k("depth_less", "ctrl+-") {
+        } else if k("depth_less") {
             self.depth = self.depth.saturating_sub(1).max(1);
             self.recompute_visible();
             self.fit_pending = true;
-        } else if k("quit", "ctrl+q") {
+        } else if k("quit") {
             return Some(Message::Exit);
         }
         None
@@ -1108,6 +1112,28 @@ pub fn run(args: Args) {
     let _ = ARGS.set(args);
     cce_ui::engine::run::<VaultApp>();
     cce_ui::ipc::instance::cleanup();
+}
+
+
+/// Vault mode's shortcuts: input.kdl name, default chord, what it does.
+const VAULT_KEYS: [(&str, &str, &str); 8] = [
+    ("toggle_local", "ctrl+l", "Switch between the whole vault and the local graph"),
+    ("toggle_files", "ctrl+shift+a", "Show or hide canvases and attachments"),
+    ("fit", "ctrl+0", "Fit the graph to the window"),
+    ("filter", "ctrl+f", "Filter notes"),
+    ("depth_more", "ctrl+=", "Show more of the local graph"),
+    // "+" on keyboards that need Shift for it.
+    ("depth_more_plus", "ctrl+shift+=", "Show more of the local graph"),
+    ("depth_less", "ctrl+-", "Show less of the local graph"),
+    ("quit", "ctrl+q", "Quit"),
+];
+
+/// [`VAULT_KEYS`] resolved, all at once on first use, so the key-help
+/// overlay lists every one (resolving a chord is what publishes it), not
+/// just those a key press has reached so far.
+fn vault_chords() -> &'static [String] {
+    static CHORDS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    CHORDS.get_or_init(|| VAULT_KEYS.iter().map(|(n, d, l)| cce_ui::input::app_shortcut(n, d, l)).collect())
 }
 
 #[cfg(test)]

@@ -1884,7 +1884,8 @@ impl Application for GraphApp {
         if event.state == ElementState::Pressed {
             // input.kdl `cce-graph.delete_node`, falling back to the legacy
             // config.kdl graph `delete` prop.
-            let delete_keybind = cce_ui::input::app_chord("delete_node", &cce_ui::layout::graph_node_delete());
+            let delete_keybind =
+                cce_ui::input::app_shortcut("delete_node", &cce_ui::layout::graph_node_delete(), "Delete the selected node");
             if cce_ui::widget::match_key_shortcut(event, &delete_keybind) {
                 self.delete_selected_node();
                 *needs_rebuild = true;
