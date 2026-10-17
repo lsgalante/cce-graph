@@ -2,6 +2,7 @@ use cce_ui::widget::Handle;
 use cce_ui::engine::{Application, LogicalPosition, LogicalSize, WindowSettings};
 mod linkgraph;
 mod picture;
+mod ui_state;
 mod vault;
 mod wiring;
 
@@ -126,6 +127,9 @@ struct GraphApp {
     show_control_panel: bool,
     control_panel_label: Handle<cce_ui::widget::Adapted<cce_ui::widget::Label>>,
 }
+
+/// The node width at zoom 1 (the zoom saved for a restart is relative to it).
+const NODE_W: f32 = 140.0;
 
 fn get_default_project_path() -> std::path::PathBuf {
     cce_ui::config::cce_config_dir().join("cce-graph").join("default.kdl")
@@ -528,7 +532,7 @@ impl GraphApp {
 
         // Configure initial grid settings on the graph
         graph.set_show_network_grid(show_grid);
-        graph.set_grid_sizes(140.0, 70.0);
+        graph.set_grid_sizes(NODE_W, 70.0);
         graph.set_skipped_sizes(gap_width, gap_width);
         graph.set_grid_origin(60.0, 60.0);
         graph.set_grid_snap_enabled(snap_enabled);
@@ -769,6 +773,29 @@ impl GraphApp {
         (c, border, cce_ui::layout::plate_corner_radius())
     }
 
+    /// Record the open document and the view for the next launch (`ui_state`).
+    fn save_place(&self) {
+        let graph = &self.ui_context[self.graph];
+        let open = self.state_file.as_ref().or(self.loaded_project_path.as_ref());
+        ui_state::save(open.map(|p| p.as_path()), graph.grid_origin(), graph.grid_sizes().0 / NODE_W);
+    }
+
+    /// Put the canvas back where a previous run left it. The zoom is held to
+    /// the widget's own limits on the node width; a non-finite value is
+    /// ignored.
+    fn restore_view(&mut self, origin: (f32, f32), zoom: f32) {
+        let graph = &mut self.ui_context[self.graph];
+        if origin.0.is_finite() && origin.1.is_finite() {
+            graph.set_grid_origin(origin.0, origin.1);
+        }
+        if zoom.is_finite() && zoom > 0.0 {
+            let width = (zoom * NODE_W).clamp(41.0, 399.0);
+            let factor = width / graph.grid_sizes().0;
+            graph.zoom_by_factor(factor);
+        }
+        self.needs_rebuild = true;
+    }
+
     fn new_project(&mut self) {
         self.ui_context[self.graph].set_nodes(&[]);
         self.loaded_images.clear();
@@ -844,7 +871,10 @@ impl GraphApp {
     /// Carry out an action the unsaved-changes check let through.
     fn perform(&mut self, action: Discarding, exit: &mut bool) {
         match action {
-            Discarding::New => self.new_project(),
+            Discarding::New => {
+                self.new_project();
+                self.save_place();
+            }
             Discarding::Open => {
                 let sender = self.message_sender.clone();
                 std::thread::spawn(move || {
@@ -863,6 +893,7 @@ impl GraphApp {
             eprintln!("Failed to load project: {:?}", e);
         } else {
             self.add_recent_file(path);
+            self.save_place();
         }
     }
 
@@ -956,6 +987,7 @@ impl GraphApp {
         self.state_file = None;
         self.mark_saved();
         self.needs_rebuild = true;
+        self.save_place();
         Ok(())
     }
 
@@ -1122,6 +1154,19 @@ impl Application for GraphApp {
         let mut app = GraphApp::with_sender(sender.into());
 
         let args: Vec<String> = std::env::args().collect();
+        // A restart replays this command line: reopen where it was instead
+        // when it is the one the place was saved under (`ui_state`).
+        let argv_path = args.get(1).map(std::path::PathBuf::from);
+        if let Some(place) = ui_state::initial(argv_path.as_deref()) {
+            let open = place.open.as_deref().expect("chosen only with a document");
+            match app.load_project_from_path(open) {
+                Ok(()) => {
+                    app.restore_view(place.origin, place.zoom);
+                    return app;
+                }
+                Err(e) => eprintln!("Failed to reopen {}: {:?}", open.display(), e),
+            }
+        }
         if args.len() > 1 {
             let path = std::path::PathBuf::from(&args[1]);
             if path.exists() {
@@ -1145,6 +1190,10 @@ impl Application for GraphApp {
         }
 
         app
+    }
+
+    fn on_exit(&mut self) {
+        self.save_place();
     }
 
     fn settings(&self) -> WindowSettings {
@@ -1991,6 +2040,21 @@ mod tests {
         assert_eq!(a.selected_image_idx, Some(0));
         assert_eq!(a.dragging_image_idx, Some(0));
         assert_eq!(a.ui_context[a.graph].selected_node(), None);
+    }
+
+    #[test]
+    fn a_restored_view_keeps_to_the_zoom_limits() {
+        let mut a = app();
+        a.restore_view((-300.0, 125.0), 2.0);
+        assert_eq!(a.ui_context[a.graph].grid_origin(), (-300.0, 125.0));
+        assert!((a.ui_context[a.graph].grid_sizes().0 - 2.0 * NODE_W).abs() < 0.01);
+        // Out of range, the nearest zoom the widget allows; garbage, nothing.
+        a.restore_view((f32::NAN, 0.0), 50.0);
+        assert_eq!(a.ui_context[a.graph].grid_origin(), (-300.0, 125.0));
+        assert!(a.ui_context[a.graph].grid_sizes().0 <= 400.0);
+        let w = a.ui_context[a.graph].grid_sizes().0;
+        a.restore_view((0.0, 0.0), f32::INFINITY);
+        assert_eq!(a.ui_context[a.graph].grid_sizes().0, w);
     }
 
     #[test]
